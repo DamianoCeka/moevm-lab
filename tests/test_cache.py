@@ -58,6 +58,101 @@ class HierarchicalCacheTests(unittest.TestCase):
         self.assertEqual(second.l1_hits, 1)
         self.assertEqual(second.transfer_ms, 0.0)
 
+    def test_batch_estimate_accounts_for_intra_batch_l2_eviction(self) -> None:
+        hardware = HardwareConfig(
+            vram_cache_mib=4.0,
+            ram_cache_mib=1.0,
+            ram_to_vram_gbps=10.0,
+            nvme_to_ram_gbps=10.0,
+            ram_latency_us=0.0,
+            nvme_latency_us=0.0,
+            overlap_efficiency=1.0,
+            prefetch_vram_fraction=0.5,
+        )
+        cache = HierarchicalExpertCache(
+            hardware,
+            expert_size_bytes=1024 * 1024,
+            prefetch_enabled=True,
+        )
+        a = ExpertKey(0, 0)
+        b = ExpertKey(0, 1)
+        cache.l2.put(b, 1024 * 1024)
+
+        estimated = cache.estimate_transfer_ms((a, b))
+        actual = cache.prefetch_many((a, b)).transfer_ms
+
+        self.assertAlmostEqual(estimated, actual)
+        self.assertEqual(cache.prefetch_many(()).transfer_ms, 0.0)
+
+    def test_speculative_l2_admission_preserves_demand_vram(self) -> None:
+        hardware = HardwareConfig(
+            vram_cache_mib=2.0,
+            ram_cache_mib=2.0,
+            ram_to_vram_gbps=10.0,
+            nvme_to_ram_gbps=10.0,
+            ram_latency_us=0.0,
+            nvme_latency_us=0.0,
+            overlap_efficiency=1.0,
+            prefetch_vram_fraction=0.5,
+        )
+        cache = HierarchicalExpertCache(
+            hardware,
+            expert_size_bytes=1024 * 1024,
+            prefetch_enabled=True,
+        )
+        demand = ExpertKey(0, 0)
+        first_speculative = ExpertKey(0, 1)
+        second_speculative = ExpertKey(0, 2)
+
+        cache.access_many((demand,))
+        cache.prefetch_many((first_speculative,))
+        cache.prefetch_many((second_speculative,))
+
+        self.assertIn(demand, cache.l1)
+        self.assertIn(demand, cache.l2)
+
+    def test_zero_capacity_speculative_buffer_skips_transfer(self) -> None:
+        cache = HierarchicalExpertCache(
+            self.hardware,
+            expert_size_bytes=1024 * 1024,
+            prefetch_enabled=False,
+        )
+
+        result = cache.prefetch_many((ExpertKey(0, 9),))
+
+        self.assertEqual(result.bytes_nvme_to_ram, 0)
+        self.assertEqual(result.bytes_ram_to_vram, 0)
+        self.assertEqual(result.loaded_to_l1, set())
+        self.assertEqual(result.rejected_capacity, 1)
+
+    def test_prefetch_result_distinguishes_reloaded_final_resident(self) -> None:
+        hardware = HardwareConfig(
+            vram_cache_mib=2.0,
+            ram_cache_mib=4.0,
+            ram_to_vram_gbps=10.0,
+            nvme_to_ram_gbps=10.0,
+            ram_latency_us=0.0,
+            nvme_latency_us=0.0,
+            overlap_efficiency=1.0,
+            prefetch_vram_fraction=0.5,
+        )
+        cache = HierarchicalExpertCache(
+            hardware,
+            expert_size_bytes=1024 * 1024,
+            prefetch_enabled=True,
+        )
+        a = ExpertKey(0, 0)
+        b = ExpertKey(0, 1)
+        cache.prefetch_many((a,))
+
+        result = cache.prefetch_many((b, a))
+
+        self.assertEqual(result.loaded_to_l1, {a, b})
+        self.assertEqual(result.evicted_from_l1, {a, b})
+        self.assertEqual(result.resident_loaded_to_l1, {a})
+        self.assertIn(a, cache.prefetch_l1)
+        self.assertNotIn(b, cache.prefetch_l1)
+
 
 if __name__ == "__main__":
     unittest.main()

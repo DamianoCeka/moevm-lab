@@ -1,0 +1,4 @@
+include configs/*.toml
+include LICENSE
+include NOTICE
+recursive-include src/moevm/configs *.toml

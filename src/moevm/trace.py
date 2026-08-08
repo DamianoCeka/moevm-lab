@@ -2,22 +2,32 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from .config import ExperimentConfig
 from .types import RoutingStep
+
+
+def _json_integer(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    return value
 
 
 class SyntheticRoutingTrace:
     """Generate domain-local, temporally correlated MoE routing traces."""
 
     def __init__(self, config: ExperimentConfig) -> None:
+        config.validate()
         self.config = config
         self._random = random.Random(config.trace.seed)
         hotset_size = min(
             config.model.experts_per_layer,
-            max(config.model.top_k, int(config.model.top_k * config.trace.hotset_multiplier)),
+            max(
+                config.model.top_k,
+                int(config.model.top_k * config.trace.hotset_multiplier),
+            ),
         )
         self._hotsets: list[list[tuple[int, ...]]] = []
         for _domain in range(config.trace.domains):
@@ -73,7 +83,10 @@ class SyntheticRoutingTrace:
         previous_by_layer: dict[int, tuple[int, ...]] = {}
 
         for token in range(self.config.trace.tokens):
-            if token and self._random.random() < self.config.trace.domain_switch_probability:
+            if (
+                token
+                and self._random.random() < self.config.trace.domain_switch_probability
+            ):
                 choices = [d for d in range(self.config.trace.domains) if d != domain]
                 if choices:
                     domain = self._random.choice(choices)
@@ -118,11 +131,18 @@ def read_trace(path: str | Path) -> list[RoutingStep]:
                 continue
             try:
                 row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("each trace row must be a JSON object")
+                experts = row["experts"]
+                if not isinstance(experts, list):
+                    raise ValueError("experts must be a JSON array")
                 steps.append(
                     RoutingStep(
-                        token_index=int(row["token"]),
-                        layer_index=int(row["layer"]),
-                        experts=tuple(int(value) for value in row["experts"]),
+                        token_index=_json_integer(row["token"], "token"),
+                        layer_index=_json_integer(row["layer"], "layer"),
+                        experts=tuple(
+                            _json_integer(value, "expert") for value in experts
+                        ),
                     )
                 )
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

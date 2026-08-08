@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from .config import HardwareConfig
 from .types import ExpertKey
@@ -41,19 +41,43 @@ class ByteLRUCache:
         self._used_bytes -= size
         return True
 
-    def put(self, key: ExpertKey, size_bytes: int) -> tuple[bool, tuple[ExpertKey, ...]]:
+    def put(
+        self,
+        key: ExpertKey,
+        size_bytes: int,
+        *,
+        protected: Iterable[ExpertKey] = (),
+    ) -> tuple[bool, tuple[ExpertKey, ...]]:
         if size_bytes <= 0:
             raise ValueError("size_bytes must be positive")
         if self.capacity_bytes == 0 or size_bytes > self.capacity_bytes:
             return False, ()
 
-        evicted: list[ExpertKey] = []
-        previous_size = self._items.pop(key, None)
+        protected_keys = set(protected)
+        previous_size = self._items.get(key)
+        used_without_key = self._used_bytes - (previous_size or 0)
+        required_bytes = max(0, used_without_key + size_bytes - self.capacity_bytes)
+
+        eviction_plan: list[ExpertKey] = []
+        freed_bytes = 0
+        if required_bytes:
+            for old_key, old_size in self._items.items():
+                if old_key == key or old_key in protected_keys:
+                    continue
+                eviction_plan.append(old_key)
+                freed_bytes += old_size
+                if freed_bytes >= required_bytes:
+                    break
+            if freed_bytes < required_bytes:
+                return False, ()
+
         if previous_size is not None:
+            self._items.pop(key)
             self._used_bytes -= previous_size
 
-        while self._items and self._used_bytes + size_bytes > self.capacity_bytes:
-            old_key, old_size = self._items.popitem(last=False)
+        evicted: list[ExpertKey] = []
+        for old_key in eviction_plan:
+            old_size = self._items.pop(old_key)
             self._used_bytes -= old_size
             evicted.append(old_key)
 
@@ -61,8 +85,42 @@ class ByteLRUCache:
         self._used_bytes += size_bytes
         return True, tuple(evicted)
 
+    def can_put(
+        self,
+        key: ExpertKey,
+        size_bytes: int,
+        *,
+        protected: Iterable[ExpertKey] = (),
+    ) -> bool:
+        if size_bytes <= 0:
+            raise ValueError("size_bytes must be positive")
+        if self.capacity_bytes == 0 or size_bytes > self.capacity_bytes:
+            return False
+
+        previous_size = self._items.get(key)
+        used_without_key = self._used_bytes - (previous_size or 0)
+        required_bytes = max(0, used_without_key + size_bytes - self.capacity_bytes)
+        if required_bytes == 0:
+            return True
+
+        protected_keys = set(protected)
+        freed_bytes = 0
+        for old_key, old_size in self._items.items():
+            if old_key == key or old_key in protected_keys:
+                continue
+            freed_bytes += old_size
+            if freed_bytes >= required_bytes:
+                return True
+        return False
+
     def keys(self) -> tuple[ExpertKey, ...]:
         return tuple(self._items.keys())
+
+    def clone(self) -> ByteLRUCache:
+        clone = ByteLRUCache(self.capacity_bytes)
+        clone._items = self._items.copy()
+        clone._used_bytes = self._used_bytes
+        return clone
 
 
 @dataclass(slots=True)
@@ -74,7 +132,10 @@ class TransferResult:
     bytes_ram_to_vram: int = 0
     bytes_nvme_to_ram: int = 0
     transfer_ms: float = 0.0
+    rejected_capacity: int = 0
+    l1_hit_keys: set[ExpertKey] = field(default_factory=set)
     loaded_to_l1: set[ExpertKey] = field(default_factory=set)
+    resident_loaded_to_l1: set[ExpertKey] = field(default_factory=set)
     evicted_from_l1: set[ExpertKey] = field(default_factory=set)
 
     @property
@@ -113,7 +174,9 @@ class HierarchicalExpertCache:
     def _deduplicate(keys: Iterable[ExpertKey]) -> tuple[ExpertKey, ...]:
         return tuple(dict.fromkeys(keys))
 
-    def _transfer_time_ms(self, ram_to_vram_bytes: int, nvme_to_ram_bytes: int) -> float:
+    def _transfer_time_ms(
+        self, ram_to_vram_bytes: int, nvme_to_ram_bytes: int
+    ) -> float:
         milliseconds = 0.0
         if nvme_to_ram_bytes:
             milliseconds += (
@@ -127,24 +190,77 @@ class HierarchicalExpertCache:
             milliseconds += self.hardware.ram_latency_us / 1000.0
         return milliseconds
 
-    def _remove_from_vram(self, keys: Iterable[ExpertKey], result: TransferResult) -> None:
+    def _remove_from_vram(
+        self, keys: Iterable[ExpertKey], result: TransferResult
+    ) -> None:
         for key in keys:
             removed = self.l1.remove(key)
             removed = self.prefetch_l1.remove(key) or removed
             if removed:
                 result.evicted_from_l1.add(key)
 
+    def _clone(self) -> HierarchicalExpertCache:
+        clone = object.__new__(HierarchicalExpertCache)
+        clone.hardware = self.hardware
+        clone.expert_size_bytes = self.expert_size_bytes
+        clone.l1 = self.l1.clone()
+        clone.prefetch_l1 = self.prefetch_l1.clone()
+        clone.l2 = self.l2.clone()
+        return clone
+
     def estimate_transfer_ms(self, keys: Iterable[ExpertKey]) -> float:
-        """Estimate current transfer cost without touching cache state."""
+        """Estimate an exact prefetch batch cost without touching cache state."""
+        simulation = self._clone()
+        return simulation.prefetch_many(keys).transfer_ms
+
+    def _estimate_prefetch_bytes(self, key: ExpertKey) -> tuple[int, int]:
+        if key in self.l1 or key in self.prefetch_l1:
+            return 0, 0
+        if self.expert_size_bytes > self.prefetch_l1.capacity_bytes:
+            return 0, 0
+        if key in self.l2:
+            return self.expert_size_bytes, 0
+        if not self.l2.can_put(
+            key,
+            self.expert_size_bytes,
+            protected=self.l1.keys(),
+        ):
+            return 0, 0
+        return self.expert_size_bytes, self.expert_size_bytes
+
+    def admit_prefetch_within_budget(
+        self,
+        keys: Iterable[ExpertKey],
+        budget_ms: float,
+    ) -> tuple[tuple[ExpertKey, ...], int]:
+        """Select the ordered prefix-compatible candidates that meet a batch deadline."""
+        if budget_ms < 0:
+            raise ValueError("budget_ms cannot be negative")
+
+        simulation = self._clone()
+        admitted: list[ExpertKey] = []
+        rejected = 0
         ram_to_vram_bytes = 0
         nvme_to_ram_bytes = 0
+
         for key in self._deduplicate(keys):
-            if key in self.l1 or key in self.prefetch_l1:
-                continue
-            ram_to_vram_bytes += self.expert_size_bytes
-            if key not in self.l2:
-                nvme_to_ram_bytes += self.expert_size_bytes
-        return self._transfer_time_ms(ram_to_vram_bytes, nvme_to_ram_bytes)
+            candidate_ram_bytes, candidate_nvme_bytes = (
+                simulation._estimate_prefetch_bytes(key)
+            )
+
+            proposed_ms = self._transfer_time_ms(
+                ram_to_vram_bytes + candidate_ram_bytes,
+                nvme_to_ram_bytes + candidate_nvme_bytes,
+            )
+            if proposed_ms <= budget_ms + 1e-12:
+                admitted.append(key)
+                ram_to_vram_bytes += candidate_ram_bytes
+                nvme_to_ram_bytes += candidate_nvme_bytes
+                simulation.prefetch_many((key,))
+            else:
+                rejected += 1
+
+        return tuple(admitted), rejected
 
     def access_many(self, keys: Iterable[ExpertKey]) -> TransferResult:
         unique_keys = self._deduplicate(keys)
@@ -153,11 +269,13 @@ class HierarchicalExpertCache:
         for key in unique_keys:
             if self.l1.touch(key):
                 result.l1_hits += 1
+                result.l1_hit_keys.add(key)
                 self.l2.touch(key)
                 continue
 
             if self.prefetch_l1.remove(key):
                 result.l1_hits += 1
+                result.l1_hit_keys.add(key)
                 self.l2.touch(key)
                 _, evicted_l1 = self.l1.put(key, self.expert_size_bytes)
                 result.evicted_from_l1.update(evicted_l1)
@@ -192,19 +310,32 @@ class HierarchicalExpertCache:
         for key in unique_keys:
             if self.l1.touch(key) or self.prefetch_l1.touch(key):
                 result.l1_hits += 1
+                result.l1_hit_keys.add(key)
                 self.l2.touch(key)
+                continue
+
+            # A speculative transfer has no value if its VRAM partition cannot
+            # hold even one expert.
+            if self.expert_size_bytes > self.prefetch_l1.capacity_bytes:
+                result.rejected_capacity += 1
                 continue
 
             if self.l2.touch(key):
                 result.l2_hits += 1
                 result.bytes_ram_to_vram += self.expert_size_bytes
             else:
+                stored_l2, evicted_l2 = self.l2.put(
+                    key,
+                    self.expert_size_bytes,
+                    protected=self.l1.keys(),
+                )
+                if not stored_l2:
+                    result.rejected_capacity += 1
+                    continue
                 result.storage_hits += 1
                 result.bytes_nvme_to_ram += self.expert_size_bytes
                 result.bytes_ram_to_vram += self.expert_size_bytes
-                stored_l2, evicted_l2 = self.l2.put(key, self.expert_size_bytes)
-                if stored_l2:
-                    self._remove_from_vram(evicted_l2, result)
+                self._remove_from_vram(evicted_l2, result)
 
             stored, evicted = self.prefetch_l1.put(key, self.expert_size_bytes)
             result.evicted_from_l1.update(evicted)
@@ -214,6 +345,9 @@ class HierarchicalExpertCache:
         result.transfer_ms = self._transfer_time_ms(
             result.bytes_ram_to_vram,
             result.bytes_nvme_to_ram,
+        )
+        result.resident_loaded_to_l1 = result.loaded_to_l1.intersection(
+            self.prefetch_l1.keys()
         )
         return result
 

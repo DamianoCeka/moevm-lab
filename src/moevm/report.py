@@ -36,8 +36,9 @@ def _run_lines(metrics: RunMetrics) -> list[str]:
         f"Total NVMe traffic:   {format_bytes(metrics.total_nvme_to_ram_bytes)}",
         f"Total RAM→VRAM:       {format_bytes(metrics.total_ram_to_vram_bytes)}",
         f"Prefetch precision:   {format_percent(metrics.prefetch_precision)}",
-        f"Predicted/admitted:   {metrics.prefetch_predictions:,}/{metrics.prefetch_candidates:,}",
+        f"Predicted/deadline-admitted: {metrics.prefetch_predictions:,}/{metrics.prefetch_candidates:,}",
         f"Deadline rejections:  {metrics.prefetch_rejected_deadline:,}",
+        f"Capacity rejections:  {metrics.prefetch_rejected_capacity:,}",
     ]
 
 
@@ -47,8 +48,10 @@ def comparison_console(result: ComparisonResult, config: ExperimentConfig) -> st
         "=" * 31,
         "SIMULATION ONLY: these values are not measured model-generation performance.",
         f"Model shape: {config.model.name}",
-        f"Tokens: {result.baseline.tokens}; layers: {config.model.layers}; "
-        f"experts/layer: {config.model.experts_per_layer}; top-k: {config.model.top_k}",
+        (
+            f"Tokens: {result.baseline.tokens}; layers: {config.model.layers}; "
+            f"experts/layer: {config.model.experts_per_layer}; top-k: {config.model.top_k}"
+        ),
         "",
         "Baseline",
         "--------",
@@ -103,8 +106,9 @@ def comparison_markdown(result: ComparisonResult, config: ExperimentConfig) -> s
 | Total NVMe traffic | {format_bytes(baseline.total_nvme_to_ram_bytes)} | {format_bytes(prefetch.total_nvme_to_ram_bytes)} |
 | Total RAM→VRAM traffic | {format_bytes(baseline.total_ram_to_vram_bytes)} | {format_bytes(prefetch.total_ram_to_vram_bytes)} |
 | Prefetch precision | — | {format_percent(prefetch.prefetch_precision)} |
-| Predicted/admitted prefetches | — | {prefetch.prefetch_predictions:,} / {prefetch.prefetch_candidates:,} |
+| Predicted/deadline-admitted prefetches | — | {prefetch.prefetch_predictions:,} / {prefetch.prefetch_candidates:,} |
 | Deadline rejections | — | {prefetch.prefetch_rejected_deadline:,} |
+| Capacity rejections | — | {prefetch.prefetch_rejected_capacity:,} |
 
 ## Comparison
 
@@ -133,6 +137,9 @@ def write_comparison(
         "config": config.as_dict(),
         **result.to_dict(),
     }
-    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(payload, allow_nan=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     markdown_path.write_text(comparison_markdown(result, config), encoding="utf-8")
     return json_path, markdown_path

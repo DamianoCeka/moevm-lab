@@ -7,10 +7,10 @@ test:
 	python3 -m unittest discover -s tests -v
 
 demo:
-	python3 -m moevm compare --config configs/toy.toml --output-dir results/toy
+	python3 -m moevm compare --config configs/toy.toml --tokens 64 --output-dir results/toy
 
 k3:
-	python3 -m moevm compare --config configs/k3_shape.toml --output-dir results/k3-shape
+	python3 -m moevm compare --config configs/k3_shape.toml --tokens 8 --output-dir results/k3-shape
 
 sweep:
 	python3 scripts/sweep.py --config configs/toy.toml

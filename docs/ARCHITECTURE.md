@@ -48,7 +48,7 @@ A useful speculative expert is promoted to the demand cache after access without
 
 ### RAM cache
 
-An inclusive byte-capacity LRU cache. Evicting an expert from RAM invalidates its VRAM copies.
+An inclusive byte-capacity LRU cache. Evicting an expert from RAM invalidates its VRAM copies. Speculative RAM admission may evict only entries that are not resident in the demand VRAM cache; when no safe victim exists, that prefetch is rejected instead of invalidating protected demand data.
 
 ### NVMe backing store
 
@@ -71,7 +71,7 @@ For each routing step:
 
 1. the predictor has a ranked queue produced after the previous step;
 2. confidence filtering removes weak candidates;
-3. deadline-aware admission estimates current residency and transfer time;
+3. deadline-aware admission replays candidate LRU transitions in a shadow cache and estimates the resulting batch transfer time;
 4. candidates that cannot fit the available `previous_compute_ms × overlap_efficiency` budget are skipped;
 5. admitted experts are prefetched;
 6. actual experts are demanded;
@@ -95,5 +95,6 @@ Prefetch can reduce demand-path stalls while increasing total PCIe traffic. Repo
 - demand and total NVMe traffic;
 - total RAM→VRAM traffic;
 - useful and wasted prefetch entries;
+- deadline and capacity admission rejections;
 - prefetch precision;
 - cache hit-rates.

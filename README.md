@@ -4,7 +4,7 @@
 
 MoEVM Lab investigates whether a large sparse MoE can use VRAM as a small, predictive working set while colder expert weights live in RAM and NVMe storage.
 
-> **Current status: v0.1 research simulator.** It does not execute Kimi K3 weights, contain CUDA kernels, or claim real K3 token-generation speed.
+> **Current status: v0.1.1 research simulator.** It does not execute Kimi K3 weights, contain CUDA kernels, or claim real K3 token-generation speed.
 
 ## Why this project exists
 
@@ -30,14 +30,14 @@ The included `configs/toy.toml` is intentionally memory constrained and routing-
 
 | Metric | Baseline | Predictive prefetch |
 |---|---:|---:|
-| Estimated throughput | 21.699 tok/s | 30.407 tok/s |
-| Demand stall | 1.413 s | 0.569 s |
-| VRAM demand hit-rate | 0.00% | 71.74% |
+| Estimated throughput | 21.699 tok/s | 30.413 tok/s |
+| Demand stall | 1.413 s | 0.568 s |
+| VRAM demand hit-rate | 0.00% | 71.78% |
 | Total NVMe traffic | 1.39 GiB | 1.39 GiB |
-| Total RAM→VRAM traffic | 24.00 GiB | 30.41 GiB |
-| Prefetch precision | — | 72.88% |
+| Total RAM→VRAM traffic | 24.00 GiB | 30.40 GiB |
+| Prefetch precision | — | 72.92% |
 
-That is an estimated **1.401× speedup** in this synthetic case. It also increases RAM→VRAM traffic by about 26.7%. This is the intended research trade-off: hide blocking transfers without pretending that prefetching is free.
+That is an estimated **1.402× speedup** in this synthetic case. It also increases RAM→VRAM traffic by about 26.7%. This is the intended research trade-off: hide blocking transfers without pretending that prefetching is free. The committed [VRAM sweep](benchmarks/reference/vram_sweep.csv) also includes a negative configuration, so improvements are not presented as universal.
 
 ## Quick start on Windows
 
@@ -51,16 +51,16 @@ Manual setup:
 ```powershell
 py -3 -m venv .venv
 $site = .\.venv\Scripts\python.exe -c "import site; print(site.getsitepackages()[0])"
-Set-Content "$site\moevm_lab.pth" "$PWD\src"
+Set-Content "$site\moevm_lab.pth" "$PWD\src" -Encoding UTF8
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m moevm compare --config configs\toy.toml --output-dir results\toy
+.\.venv\Scripts\python.exe -m moevm compare --config configs\toy.toml --tokens 64 --output-dir results\toy
 ```
 
 K3-shaped memory simulation:
 
 ```powershell
 .\.venv\Scripts\python.exe -m moevm doctor --config configs\k3_shape.toml
-.\.venv\Scripts\python.exe -m moevm compare --config configs\k3_shape.toml --output-dir results\k3-shape
+.\.venv\Scripts\python.exe -m moevm compare --config configs\k3_shape.toml --tokens 8 --output-dir results\k3-shape
 ```
 
 ## Commands
@@ -102,6 +102,16 @@ benchmarks/reference/  Committed reference simulation output
 The current 8-token K3-shaped smoke test estimates **1.036×**, while rejecting 9,114 of 10,416 predictions that could not meet a one-layer deadline. This is still simulation, but it demonstrates why admission control matters.
 
 See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md).
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Reference benchmarks](benchmarks/reference/README.md)
+- [Benchmarking rules](docs/BENCHMARKING.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Research questions](docs/RESEARCH_QUESTIONS.md)
+- [Italian overview](docs/README.it.md)
+- [Changelog](CHANGELOG.md), [citation](CITATION.cff), [security](SECURITY.md) and [contributing](CONTRIBUTING.md)
 
 ## Important limitations
 

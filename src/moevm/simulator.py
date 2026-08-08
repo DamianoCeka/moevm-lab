@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Literal
+from typing import Literal
 
 from .cache import HierarchicalExpertCache
 from .config import ExperimentConfig
@@ -32,6 +33,7 @@ class RunMetrics:
     prefetch_predictions: int = 0
     prefetch_candidates: int = 0
     prefetch_rejected_deadline: int = 0
+    prefetch_rejected_capacity: int = 0
     prefetch_l1_hits: int = 0
     prefetch_l2_hits: int = 0
     prefetch_storage_hits: int = 0
@@ -48,7 +50,11 @@ class RunMetrics:
 
     @property
     def demand_l1_hit_rate(self) -> float:
-        return 0.0 if self.expert_accesses == 0 else self.demand_l1_hits / self.expert_accesses
+        return (
+            0.0
+            if self.expert_accesses == 0
+            else self.demand_l1_hits / self.expert_accesses
+        )
 
     @property
     def demand_cache_hit_rate(self) -> float:
@@ -57,7 +63,11 @@ class RunMetrics:
 
     @property
     def prefetch_precision(self) -> float:
-        return 0.0 if self.prefetch_loaded == 0 else self.prefetch_useful / self.prefetch_loaded
+        return (
+            0.0
+            if self.prefetch_loaded == 0
+            else self.prefetch_useful / self.prefetch_loaded
+        )
 
     @property
     def total_nvme_to_ram_bytes(self) -> int:
@@ -148,9 +158,24 @@ class ComparisonResult:
 def _validate_trace(config: ExperimentConfig, steps: list[RoutingStep]) -> None:
     if not steps:
         raise ValueError("trace cannot be empty")
+    if len(steps) % config.model.layers:
+        raise ValueError(
+            "trace must contain one complete, ordered layer sequence per token"
+        )
+    first_token = steps[0].token_index
     for index, step in enumerate(steps):
+        expected_token = first_token + index // config.model.layers
+        expected_layer = index % config.model.layers
+        if step.token_index != expected_token or step.layer_index != expected_layer:
+            raise ValueError(
+                f"trace step {index} is token {step.token_index}, layer "
+                f"{step.layer_index}; expected token {expected_token}, layer "
+                f"{expected_layer}"
+            )
         if step.layer_index >= config.model.layers:
-            raise ValueError(f"trace step {index} references invalid layer {step.layer_index}")
+            raise ValueError(
+                f"trace step {index} references invalid layer {step.layer_index}"
+            )
         if len(step.experts) != config.model.top_k:
             raise ValueError(
                 f"trace step {index} has {len(step.experts)} experts; expected {config.model.top_k}"
@@ -175,11 +200,21 @@ def run_experiment(
     mode: RunMode = "prefetch",
     trace: Iterable[RoutingStep] | None = None,
 ) -> RunMetrics:
+    if mode not in ("baseline", "prefetch"):
+        raise ValueError(f"unknown run mode: {mode}")
     config.validate()
-    steps = list(trace) if trace is not None else list(SyntheticRoutingTrace(config).generate())
+    steps = (
+        list(trace)
+        if trace is not None
+        else list(SyntheticRoutingTrace(config).generate())
+    )
     _validate_trace(config, steps)
 
-    use_prefetch = mode == "prefetch" and config.predictor.enabled
+    use_prefetch = (
+        mode == "prefetch"
+        and config.predictor.enabled
+        and config.predictor.prefetch_count > 0
+    )
     cache = HierarchicalExpertCache(
         config.hardware,
         config.model.expert_size_bytes,
@@ -187,7 +222,7 @@ def run_experiment(
     )
     predictor = OnlineExpertPredictor(config.predictor)
     metrics = RunMetrics(mode=mode, model_name=config.model.name)
-    metrics.tokens = len({step.token_index for step in steps})
+    metrics.tokens = len(steps) // config.model.layers
     metrics.steps = len(steps)
 
     pending_prefetch: tuple[ExpertKey, ...] = ()
@@ -201,35 +236,36 @@ def run_experiment(
             admitted_prefetch = pending_prefetch
             if config.predictor.deadline_aware:
                 budget_ms = previous_compute_ms * config.hardware.overlap_efficiency
-                admitted: list[ExpertKey] = []
-                for key in pending_prefetch:
-                    trial = (*admitted, key)
-                    if cache.estimate_transfer_ms(trial) <= budget_ms + 1e-12:
-                        admitted.append(key)
-                    else:
-                        metrics.prefetch_rejected_deadline += 1
-                admitted_prefetch = tuple(admitted)
+                admitted_prefetch, rejected = cache.admit_prefetch_within_budget(
+                    pending_prefetch,
+                    budget_ms,
+                )
+                metrics.prefetch_rejected_deadline += rejected
 
             prefetch = cache.prefetch_many(admitted_prefetch)
             metrics.prefetch_candidates += prefetch.requested
             metrics.prefetch_l1_hits += prefetch.l1_hits
             metrics.prefetch_l2_hits += prefetch.l2_hits
             metrics.prefetch_storage_hits += prefetch.storage_hits
+            metrics.prefetch_rejected_capacity += prefetch.rejected_capacity
             metrics.prefetch_ram_to_vram_bytes += prefetch.bytes_ram_to_vram
             metrics.prefetch_nvme_to_ram_bytes += prefetch.bytes_nvme_to_ram
             _mark_evictions(prefetch.evicted_from_l1, active_prefetch, metrics)
-
             for key in prefetch.loaded_to_l1:
-                if key not in active_prefetch:
+                metrics.prefetch_loaded += 1
+                if key in prefetch.resident_loaded_to_l1:
                     active_prefetch.add(key)
-                    metrics.prefetch_loaded += 1
+                else:
+                    metrics.prefetch_wasted += 1
 
             hidden_budget_ms = previous_compute_ms * config.hardware.overlap_efficiency
-            metrics.prefetch_stall_ms += max(0.0, prefetch.transfer_ms - hidden_budget_ms)
+            metrics.prefetch_stall_ms += max(
+                0.0, prefetch.transfer_ms - hidden_budget_ms
+            )
 
         required = step.keys
-        useful_now = active_prefetch.intersection(required)
         demand = cache.access_many(required)
+        useful_now = active_prefetch.intersection(demand.l1_hit_keys)
         metrics.expert_accesses += demand.requested
         metrics.demand_l1_hits += demand.l1_hits
         metrics.demand_l2_hits += demand.l2_hits
@@ -259,7 +295,8 @@ def run_experiment(
                     ),
                 )
                 pending_prefetch = tuple(
-                    ExpertKey(next_step.layer_index, expert) for expert in predicted_experts
+                    ExpertKey(next_step.layer_index, expert)
+                    for expert in predicted_experts
                 )
             else:
                 pending_prefetch = ()
@@ -270,7 +307,9 @@ def run_experiment(
 
     metrics.prefetch_wasted += len(active_prefetch)
     metrics.final_cache = cache.snapshot()
-    metrics.elapsed_ms = metrics.compute_ms + metrics.demand_stall_ms + metrics.prefetch_stall_ms
+    metrics.elapsed_ms = (
+        metrics.compute_ms + metrics.demand_stall_ms + metrics.prefetch_stall_ms
+    )
     return metrics
 
 
@@ -278,7 +317,12 @@ def compare_experiment(
     config: ExperimentConfig,
     trace: Iterable[RoutingStep] | None = None,
 ) -> ComparisonResult:
-    steps = list(trace) if trace is not None else list(SyntheticRoutingTrace(config).generate())
+    config.validate()
+    steps = (
+        list(trace)
+        if trace is not None
+        else list(SyntheticRoutingTrace(config).generate())
+    )
     baseline = run_experiment(config, mode="baseline", trace=steps)
     prefetch = run_experiment(config, mode="prefetch", trace=steps)
     return ComparisonResult(baseline=baseline, prefetch=prefetch)

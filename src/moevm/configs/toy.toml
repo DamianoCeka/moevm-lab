@@ -1,0 +1,36 @@
+[model]
+name = "toy-locality-moe"
+layers = 12
+experts_per_layer = 64
+top_k = 4
+expert_size_mib = 8.0
+compute_ms_per_layer = 2.0
+
+[hardware]
+vram_cache_mib = 256.0
+ram_cache_mib = 2048.0
+ram_to_vram_gbps = 22.0
+nvme_to_ram_gbps = 7.0
+ram_latency_us = 20.0
+nvme_latency_us = 100.0
+overlap_efficiency = 0.85
+prefetch_vram_fraction = 0.125
+
+[trace]
+tokens = 256
+domains = 4
+domain_switch_probability = 0.02
+hotset_multiplier = 3.0
+temporal_reuse_probability = 0.94
+random_expert_probability = 0.01
+seed = 42
+
+[predictor]
+enabled = true
+prefetch_count = 4
+frequency_weight = 0.0
+temporal_weight = 5.0
+cross_layer_weight = 1.0
+max_targets_per_source = 64
+min_relative_confidence = 0.15
+deadline_aware = true

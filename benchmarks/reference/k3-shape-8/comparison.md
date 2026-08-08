@@ -29,8 +29,9 @@
 | Total NVMe traffic | 79.69 GiB | 79.69 GiB |
 | Total RAM→VRAM traffic | 232.50 GiB | 239.65 GiB |
 | Prefetch precision | — | 71.89% |
-| Predicted/admitted prefetches | — | 10,416 / 1,302 |
+| Predicted/deadline-admitted prefetches | — | 10,416 / 1,302 |
 | Deadline rejections | — | 9,114 |
+| Capacity rejections | — | 0 |
 
 ## Comparison
 

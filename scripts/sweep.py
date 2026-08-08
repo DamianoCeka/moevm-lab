@@ -28,7 +28,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     config = load_config(args.config)
-    sizes = [float(value.strip()) for value in args.sizes_mib.split(",") if value.strip()]
+    sizes = [
+        float(value.strip()) for value in args.sizes_mib.split(",") if value.strip()
+    ]
     if not sizes or min(sizes) <= 0:
         raise ValueError("--sizes-mib must contain positive numbers")
 

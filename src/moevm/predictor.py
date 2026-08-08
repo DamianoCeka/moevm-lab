@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import DefaultDict
 
 from .config import PredictorConfig
 from .types import RoutingStep
@@ -14,22 +13,34 @@ class OnlineExpertPredictor:
 
     def __init__(self, config: PredictorConfig) -> None:
         self.config = config
-        self._frequency: DefaultDict[int, Counter[int]] = defaultdict(Counter)
-        self._temporal: DefaultDict[TransitionKey, Counter[int]] = defaultdict(Counter)
-        self._cross_layer: DefaultDict[TransitionKey, Counter[int]] = defaultdict(Counter)
+        self._frequency: defaultdict[int, Counter[int]] = defaultdict(Counter)
+        self._temporal: defaultdict[TransitionKey, Counter[int]] = defaultdict(Counter)
+        self._cross_layer: defaultdict[TransitionKey, Counter[int]] = defaultdict(
+            Counter
+        )
         self._last_by_layer: dict[int, tuple[int, ...]] = {}
 
     def _increment_bounded(
         self,
-        table: DefaultDict[TransitionKey, Counter[int]],
+        table: defaultdict[TransitionKey, Counter[int]],
         key: TransitionKey,
         targets: tuple[int, ...],
     ) -> None:
         counter = table[key]
-        counter.update(targets)
         limit = self.config.max_targets_per_source
-        if len(counter) > limit * 2:
-            table[key] = Counter(dict(counter.most_common(limit)))
+        for target in targets:
+            if target in counter:
+                counter[target] += 1
+                continue
+            if len(counter) < limit:
+                counter[target] = 1
+                continue
+
+            # Space-Saving keeps the table strictly bounded while still letting
+            # a sustained new target replace the current least-frequent entry.
+            victim = min(counter, key=lambda expert: (counter[expert], expert))
+            replacement_count = counter.pop(victim) + 1
+            counter[target] = replacement_count
 
     def observe(self, step: RoutingStep, previous_step: RoutingStep | None) -> None:
         self._frequency[step.layer_index].update(step.experts)
@@ -68,12 +79,12 @@ class OnlineExpertPredictor:
 
         scores: Counter[int] = Counter()
         frequency = self._frequency.get(target_layer)
-        if frequency:
+        if frequency and self.config.frequency_weight > 0:
             for expert, count in frequency.items():
                 scores[expert] += self.config.frequency_weight * count
 
         previous_same_layer = self._last_by_layer.get(target_layer)
-        if previous_same_layer:
+        if previous_same_layer and self.config.temporal_weight > 0:
             for source in previous_same_layer:
                 transitions = self._temporal.get((target_layer, source))
                 if transitions:
@@ -82,7 +93,11 @@ class OnlineExpertPredictor:
                 # A cheap persistence prior is useful before transitions are trained.
                 scores[source] += self.config.temporal_weight
 
-        if current_step is not None and current_step.layer_index + 1 == target_layer:
+        if (
+            current_step is not None
+            and current_step.layer_index + 1 == target_layer
+            and self.config.cross_layer_weight > 0
+        ):
             for source in current_step.experts:
                 transitions = self._cross_layer.get((target_layer, source))
                 if transitions:
@@ -98,6 +113,8 @@ class OnlineExpertPredictor:
         threshold = self.config.min_relative_confidence
         selected: list[int] = []
         for expert, score in ranked:
+            if score <= 0:
+                continue
             if float(score) / max_score < threshold:
                 continue
             selected.append(expert)

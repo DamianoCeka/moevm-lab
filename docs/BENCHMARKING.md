@@ -22,7 +22,7 @@ Use the same routing trace, cache budget, expert size, bandwidth assumptions and
 - VRAM-only and VRAM+RAM hit-rate;
 - NVMe→RAM and RAM→VRAM bytes;
 - bytes per token;
-- prefetch precision, useful entries and wasted entries;
+- prefetch precision, useful entries, wasted entries and admission rejections;
 - warm-up policy and random seed.
 
 For real execution also report:
@@ -49,5 +49,5 @@ A real backend advances toward a K3 adapter only after it beats a public baselin
 ## Reference command
 
 ```bash
-moevm compare --config configs/toy.toml --output-dir results/toy
+python -m moevm compare --config configs/toy.toml --tokens 64 --output-dir results/toy
 ```

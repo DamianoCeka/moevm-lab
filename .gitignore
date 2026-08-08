@@ -10,9 +10,7 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
-results/*.json
-results/*.md
-results/*.csv
+results/**
 !results/.gitkeep
 *.trace.jsonl
 .DS_Store

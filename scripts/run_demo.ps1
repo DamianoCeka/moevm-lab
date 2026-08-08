@@ -7,4 +7,7 @@ if (-not (Test-Path $Python)) {
     throw "Virtual environment not found. Run scripts\bootstrap.ps1 first."
 }
 
-& $Python -m moevm compare --config configs\toy.toml --output-dir results\toy
+& $Python -m moevm compare --config configs\toy.toml --tokens 64 --output-dir results\toy
+if ($LASTEXITCODE -ne 0) {
+    throw "Reference simulation failed with exit code $LASTEXITCODE."
+}

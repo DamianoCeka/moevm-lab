@@ -1,13 +1,15 @@
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools==80.10.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "moevm-lab"
-version = "0.1.0"
+version = "0.1.1"
 description = "Research simulator for expert-aware memory virtualization in sparse Mixture-of-Experts inference."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
   { name = "Damiano Ceka" }
 ]
@@ -19,9 +21,17 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/DamianoCeka/moevm-lab"
+Repository = "https://github.com/DamianoCeka/moevm-lab"
+Issues = "https://github.com/DamianoCeka/moevm-lab/issues"
+Changelog = "https://github.com/DamianoCeka/moevm-lab/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/DamianoCeka/moevm-lab/tree/main/docs"
 
 [project.scripts]
 moevm = "moevm.cli:main"
@@ -30,4 +40,11 @@ moevm = "moevm.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-moevm = ["py.typed"]
+moevm = ["py.typed", "configs/*.toml"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# CLI-facing validation deliberately normalizes malformed user input to ValueError.
+ignore = ["TRY004"]

@@ -1,6 +1,6 @@
 # Contributing
 
-MoEVM Lab is currently a private pre-release prototype. External contributions are not yet accepted because the public license and contributor policy have not been selected.
+MoEVM Lab is currently a private pre-release prototype. Reproducible bug reports and research proposals are welcome from repository collaborators, but external pull requests are not yet accepted because the public license and contributor policy have not been selected.
 
 For internal development:
 

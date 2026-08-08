@@ -21,6 +21,28 @@ class TraceTests(unittest.TestCase):
 
         self.assertEqual(original, restored)
 
+    def test_rejects_coercible_non_integer_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "trace.jsonl"
+            path.write_text(
+                '{"token":true,"layer":0,"experts":[0,1]}\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "token must be an integer"):
+                read_trace(path)
+
+    def test_rejects_non_array_experts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "trace.jsonl"
+            path.write_text(
+                '{"token":0,"layer":0,"experts":"01"}\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "experts must be a JSON array"):
+                read_trace(path)
+
 
 if __name__ == "__main__":
     unittest.main()
