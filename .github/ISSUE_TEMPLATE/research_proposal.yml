@@ -1,0 +1,29 @@
+name: Research proposal
+description: Propose a measurable scheduling or memory experiment
+title: "[research] "
+labels: ["research"]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Falsifiable hypothesis
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline and controlled variables
+    validations:
+      required: true
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Required metrics and acceptance gate
+    validations:
+      required: true
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Smallest implementation that can test it
+    validations:
+      required: true

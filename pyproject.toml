@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moevm-lab"
+version = "0.1.0"
+description = "Research simulator for expert-aware memory virtualization in sparse Mixture-of-Experts inference."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Damiano Ceka" }
+]
+keywords = ["mixture-of-experts", "inference", "offloading", "prefetch", "gpu", "nvme"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.scripts]
+moevm = "moevm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+moevm = ["py.typed"]

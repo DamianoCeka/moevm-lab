@@ -1,0 +1,42 @@
+# A memory-system experiment shaped like Kimi K3's published MoE topology.
+# This does NOT reproduce K3 compute, weight layout, kernels or measured speed.
+
+[model]
+name = "k3-shaped-synthetic"
+layers = 93
+experts_per_layer = 896
+top_k = 16
+# Synthetic average expert payload used by the simulator, not an official shard size.
+expert_size_mib = 20.0
+# Placeholder compute budget. Replace with measurements from a real backend.
+compute_ms_per_layer = 2.5
+
+[hardware]
+# Example workstation budget after reserving VRAM/RAM for non-expert state.
+vram_cache_mib = 8192.0
+ram_cache_mib = 98304.0
+ram_to_vram_gbps = 22.0
+nvme_to_ram_gbps = 7.0
+ram_latency_us = 25.0
+nvme_latency_us = 110.0
+overlap_efficiency = 0.85
+prefetch_vram_fraction = 0.04
+
+[trace]
+tokens = 32
+domains = 6
+domain_switch_probability = 0.04
+hotset_multiplier = 4.0
+temporal_reuse_probability = 0.72
+random_expert_probability = 0.05
+seed = 2026
+
+[predictor]
+enabled = true
+prefetch_count = 16
+frequency_weight = 0.10
+temporal_weight = 2.0
+cross_layer_weight = 2.75
+max_targets_per_source = 96
+min_relative_confidence = 0.20
+deadline_aware = true
