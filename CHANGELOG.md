@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 — 2026-08-09
+
+- Captured router decisions and top-k probabilities from the pinned open
+  `allenai/OLMoE-1B-7B-0924` checkpoint on a local RTX 3080 Ti.
+- Added ten reproducible real-routing traces spanning five controlled workloads
+  and two sampling seeds (438 tokens and 56,064 expert accesses).
+- Added locality, entropy, router-confidence and online-predictor trace analysis.
+- Added a scored JSONL trace schema while retaining compatibility with v0.1 traces.
+- Added an OLMoE replay profile and portable real-routing reference study.
+- Added golden tests that verify every committed trace hash, analysis and replay.
+- Documented the negative result: the current policy averages 1.0022× simulated
+  replay speedup while increasing simulated RAM-to-VRAM traffic by 6.17%.
+- Added a pinned, Windows-safe real-capture environment and checkpoint workflow.
+
 ## 0.1.1 — 2026-08-08
 
 - Bundled default configurations so installed wheel and sdist commands work outside the checkout.

@@ -56,7 +56,7 @@ The backing store is assumed to contain every expert. It has configured sequenti
 
 ## Predictor
 
-The v0.1 online predictor combines:
+The online predictor combines:
 
 1. target-layer expert frequency;
 2. transitions from the previous token's experts at the same layer;
@@ -85,7 +85,9 @@ Transfer time is modeled as:
 bytes / bandwidth + one batch latency
 ```
 
-NVMe→RAM and RAM→VRAM times are additive in v0.1. A future pipeline model should represent concurrent engines, queue depth, cancellation and multi-step deadlines explicitly.
+NVMe→RAM and RAM→VRAM times are additive in the current simulator. A future
+pipeline model should represent concurrent engines, queue depth, cancellation
+and multi-step deadlines explicitly.
 
 ## Why the simulator reports traffic and latency
 

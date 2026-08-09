@@ -1,0 +1,719 @@
+{
+  "analysis": {
+    "exact_repeat_rate": 0.0,
+    "expert_accesses": 5120,
+    "layers": 16,
+    "mean_normalized_entropy": 0.8605458499773407,
+    "mean_temporal_overlap": 0.4811698717948718,
+    "mean_topk_probability_mass": 0.4348589090102905,
+    "per_layer": [
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 0,
+        "mean_topk_probability_mass": 0.39375238600187,
+        "normalized_entropy": 0.9024848828495758,
+        "temporal_overlap": 0.4230769230769231,
+        "tokens": 40,
+        "top_experts": [
+          [
+            6,
+            0.0875
+          ],
+          [
+            21,
+            0.06875
+          ],
+          [
+            0,
+            0.046875
+          ],
+          [
+            57,
+            0.0375
+          ],
+          [
+            24,
+            0.034375
+          ],
+          [
+            60,
+            0.034375
+          ],
+          [
+            41,
+            0.034375
+          ],
+          [
+            46,
+            0.03125
+          ]
+        ],
+        "unique_experts": 56
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 1,
+        "mean_topk_probability_mass": 0.33738744142465293,
+        "normalized_entropy": 0.9033532381679745,
+        "temporal_overlap": 0.38461538461538464,
+        "tokens": 40,
+        "top_experts": [
+          [
+            25,
+            0.1
+          ],
+          [
+            47,
+            0.075
+          ],
+          [
+            12,
+            0.046875
+          ],
+          [
+            15,
+            0.0375
+          ],
+          [
+            18,
+            0.03125
+          ],
+          [
+            30,
+            0.03125
+          ],
+          [
+            29,
+            0.03125
+          ],
+          [
+            59,
+            0.028125
+          ]
+        ],
+        "unique_experts": 60
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 2,
+        "mean_topk_probability_mass": 0.38928493844578044,
+        "normalized_entropy": 0.8705171577013303,
+        "temporal_overlap": 0.48717948717948717,
+        "tokens": 40,
+        "top_experts": [
+          [
+            40,
+            0.11875
+          ],
+          [
+            5,
+            0.096875
+          ],
+          [
+            54,
+            0.046875
+          ],
+          [
+            15,
+            0.0375
+          ],
+          [
+            8,
+            0.0375
+          ],
+          [
+            46,
+            0.034375
+          ],
+          [
+            18,
+            0.034375
+          ],
+          [
+            63,
+            0.034375
+          ]
+        ],
+        "unique_experts": 59
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 3,
+        "mean_topk_probability_mass": 0.39795760738197716,
+        "normalized_entropy": 0.8647203908408987,
+        "temporal_overlap": 0.4583333333333333,
+        "tokens": 40,
+        "top_experts": [
+          [
+            35,
+            0.103125
+          ],
+          [
+            43,
+            0.078125
+          ],
+          [
+            57,
+            0.05625
+          ],
+          [
+            62,
+            0.05
+          ],
+          [
+            15,
+            0.04375
+          ],
+          [
+            63,
+            0.034375
+          ],
+          [
+            23,
+            0.034375
+          ],
+          [
+            39,
+            0.03125
+          ]
+        ],
+        "unique_experts": 53
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 4,
+        "mean_topk_probability_mass": 0.36179583992343395,
+        "normalized_entropy": 0.8466478570584404,
+        "temporal_overlap": 0.5192307692307693,
+        "tokens": 40,
+        "top_experts": [
+          [
+            17,
+            0.115625
+          ],
+          [
+            55,
+            0.109375
+          ],
+          [
+            19,
+            0.05625
+          ],
+          [
+            33,
+            0.05
+          ],
+          [
+            62,
+            0.04375
+          ],
+          [
+            31,
+            0.0375
+          ],
+          [
+            47,
+            0.034375
+          ],
+          [
+            49,
+            0.034375
+          ]
+        ],
+        "unique_experts": 58
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 5,
+        "mean_topk_probability_mass": 0.3668380770366639,
+        "normalized_entropy": 0.8255817826917475,
+        "temporal_overlap": 0.5416666666666666,
+        "tokens": 40,
+        "top_experts": [
+          [
+            29,
+            0.09375
+          ],
+          [
+            42,
+            0.0875
+          ],
+          [
+            0,
+            0.071875
+          ],
+          [
+            38,
+            0.06875
+          ],
+          [
+            2,
+            0.04375
+          ],
+          [
+            13,
+            0.04375
+          ],
+          [
+            14,
+            0.040625
+          ],
+          [
+            55,
+            0.0375
+          ]
+        ],
+        "unique_experts": 49
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 6,
+        "mean_topk_probability_mass": 0.35373441777192055,
+        "normalized_entropy": 0.8360694677951449,
+        "temporal_overlap": 0.5224358974358975,
+        "tokens": 40,
+        "top_experts": [
+          [
+            42,
+            0.10625
+          ],
+          [
+            5,
+            0.065625
+          ],
+          [
+            18,
+            0.0625
+          ],
+          [
+            33,
+            0.05625
+          ],
+          [
+            52,
+            0.046875
+          ],
+          [
+            57,
+            0.04375
+          ],
+          [
+            36,
+            0.040625
+          ],
+          [
+            61,
+            0.040625
+          ]
+        ],
+        "unique_experts": 46
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 7,
+        "mean_topk_probability_mass": 0.3573423373512924,
+        "normalized_entropy": 0.8578965740586418,
+        "temporal_overlap": 0.5032051282051282,
+        "tokens": 40,
+        "top_experts": [
+          [
+            17,
+            0.096875
+          ],
+          [
+            1,
+            0.06875
+          ],
+          [
+            13,
+            0.059375
+          ],
+          [
+            59,
+            0.053125
+          ],
+          [
+            54,
+            0.034375
+          ],
+          [
+            22,
+            0.034375
+          ],
+          [
+            26,
+            0.034375
+          ],
+          [
+            4,
+            0.034375
+          ]
+        ],
+        "unique_experts": 47
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 8,
+        "mean_topk_probability_mass": 0.38416658630594613,
+        "normalized_entropy": 0.8774460795765404,
+        "temporal_overlap": 0.44551282051282054,
+        "tokens": 40,
+        "top_experts": [
+          [
+            3,
+            0.096875
+          ],
+          [
+            14,
+            0.065625
+          ],
+          [
+            18,
+            0.053125
+          ],
+          [
+            32,
+            0.04375
+          ],
+          [
+            24,
+            0.040625
+          ],
+          [
+            57,
+            0.040625
+          ],
+          [
+            51,
+            0.0375
+          ],
+          [
+            52,
+            0.0375
+          ]
+        ],
+        "unique_experts": 56
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 9,
+        "mean_topk_probability_mass": 0.4258605463895947,
+        "normalized_entropy": 0.8774091913956433,
+        "temporal_overlap": 0.4519230769230769,
+        "tokens": 40,
+        "top_experts": [
+          [
+            5,
+            0.096875
+          ],
+          [
+            4,
+            0.071875
+          ],
+          [
+            46,
+            0.071875
+          ],
+          [
+            28,
+            0.05
+          ],
+          [
+            11,
+            0.034375
+          ],
+          [
+            36,
+            0.034375
+          ],
+          [
+            48,
+            0.028125
+          ],
+          [
+            37,
+            0.028125
+          ]
+        ],
+        "unique_experts": 55
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 10,
+        "mean_topk_probability_mass": 0.48703382280655205,
+        "normalized_entropy": 0.9179141475493345,
+        "temporal_overlap": 0.4358974358974359,
+        "tokens": 40,
+        "top_experts": [
+          [
+            56,
+            0.065625
+          ],
+          [
+            2,
+            0.05625
+          ],
+          [
+            28,
+            0.040625
+          ],
+          [
+            9,
+            0.040625
+          ],
+          [
+            16,
+            0.040625
+          ],
+          [
+            59,
+            0.028125
+          ],
+          [
+            48,
+            0.028125
+          ],
+          [
+            1,
+            0.028125
+          ]
+        ],
+        "unique_experts": 57
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 11,
+        "mean_topk_probability_mass": 0.4898737270385027,
+        "normalized_entropy": 0.8597180266982657,
+        "temporal_overlap": 0.49038461538461536,
+        "tokens": 40,
+        "top_experts": [
+          [
+            13,
+            0.103125
+          ],
+          [
+            27,
+            0.084375
+          ],
+          [
+            47,
+            0.06875
+          ],
+          [
+            63,
+            0.065625
+          ],
+          [
+            49,
+            0.0375
+          ],
+          [
+            51,
+            0.03125
+          ],
+          [
+            17,
+            0.03125
+          ],
+          [
+            31,
+            0.028125
+          ]
+        ],
+        "unique_experts": 53
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 12,
+        "mean_topk_probability_mass": 0.5496021897997707,
+        "normalized_entropy": 0.8368566953998593,
+        "temporal_overlap": 0.5,
+        "tokens": 40,
+        "top_experts": [
+          [
+            43,
+            0.1125
+          ],
+          [
+            38,
+            0.1
+          ],
+          [
+            31,
+            0.090625
+          ],
+          [
+            8,
+            0.040625
+          ],
+          [
+            45,
+            0.040625
+          ],
+          [
+            48,
+            0.040625
+          ],
+          [
+            41,
+            0.03125
+          ],
+          [
+            10,
+            0.028125
+          ]
+        ],
+        "unique_experts": 52
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 13,
+        "mean_topk_probability_mass": 0.5257906396873295,
+        "normalized_entropy": 0.8442593727058396,
+        "temporal_overlap": 0.4807692307692308,
+        "tokens": 40,
+        "top_experts": [
+          [
+            11,
+            0.109375
+          ],
+          [
+            6,
+            0.10625
+          ],
+          [
+            2,
+            0.05625
+          ],
+          [
+            31,
+            0.053125
+          ],
+          [
+            20,
+            0.040625
+          ],
+          [
+            3,
+            0.040625
+          ],
+          [
+            57,
+            0.0375
+          ],
+          [
+            62,
+            0.034375
+          ]
+        ],
+        "unique_experts": 55
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 14,
+        "mean_topk_probability_mass": 0.572682765481295,
+        "normalized_entropy": 0.8161819806495071,
+        "temporal_overlap": 0.5416666666666666,
+        "tokens": 40,
+        "top_experts": [
+          [
+            6,
+            0.11875
+          ],
+          [
+            36,
+            0.10625
+          ],
+          [
+            28,
+            0.096875
+          ],
+          [
+            46,
+            0.05625
+          ],
+          [
+            58,
+            0.0375
+          ],
+          [
+            41,
+            0.034375
+          ],
+          [
+            38,
+            0.034375
+          ],
+          [
+            23,
+            0.03125
+          ]
+        ],
+        "unique_experts": 49
+      },
+      {
+        "exact_repeat_rate": 0.0,
+        "layer_index": 15,
+        "mean_topk_probability_mass": 0.5646392213180661,
+        "normalized_entropy": 0.8316767544987106,
+        "temporal_overlap": 0.5128205128205128,
+        "tokens": 40,
+        "top_experts": [
+          [
+            30,
+            0.115625
+          ],
+          [
+            34,
+            0.1
+          ],
+          [
+            17,
+            0.084375
+          ],
+          [
+            58,
+            0.053125
+          ],
+          [
+            21,
+            0.040625
+          ],
+          [
+            20,
+            0.0375
+          ],
+          [
+            8,
+            0.034375
+          ],
+          [
+            29,
+            0.03125
+          ]
+        ],
+        "unique_experts": 51
+      }
+    ],
+    "predictor": {
+      "correct_experts": 2200,
+      "coverage": 1.0,
+      "evaluated_steps": 624,
+      "precision": 0.4407051282051282,
+      "predicted_experts": 4992,
+      "recall": 0.4407051282051282,
+      "steps_with_predictions": 624
+    },
+    "score_coverage": 1.0,
+    "steps": 640,
+    "token_start": 0,
+    "tokens": 40,
+    "top_k": 8
+  },
+  "label": "routing capture",
+  "trace": {
+    "path": "traces/seed-29/systems_en.trace.jsonl",
+    "sha256": "a8f579f3f78ae690e3b6037e8ba1bab640c508fbba953ab9fad56e2f9b8a3ae9"
+  }
+}

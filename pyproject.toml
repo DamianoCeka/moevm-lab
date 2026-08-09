@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moevm-lab"
-version = "0.1.1"
+version = "0.2.0"
 description = "Research simulator for expert-aware memory virtualization in sparse Mixture-of-Experts inference."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,14 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = []
+
+[project.optional-dependencies]
+real-traces = [
+  "accelerate==1.14.0",
+  "huggingface-hub==1.27.0",
+  "safetensors==0.8.0",
+  "transformers==5.14.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/DamianoCeka/moevm-lab"

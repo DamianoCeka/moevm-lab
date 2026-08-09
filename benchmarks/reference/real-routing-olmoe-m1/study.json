@@ -1,0 +1,697 @@
+{
+  "aggregate": {
+    "expert_accesses": 56064,
+    "metrics": {
+      "predictor_precision": {
+        "max": 0.4820130813953488,
+        "mean": 0.4400735487149484,
+        "min": 0.4029796511627907
+      },
+      "predictor_recall": {
+        "max": 0.4820130813953488,
+        "mean": 0.4400735487149484,
+        "min": 0.4029796511627907
+      },
+      "replay_demand_stall_reduction": {
+        "max": 0.02335560073844023,
+        "mean": 0.0023355499769038947,
+        "min": -0.022370435019595014
+      },
+      "replay_prefetch_precision": {
+        "max": 0.918918918918919,
+        "mean": 0.8072086321716572,
+        "min": 0.6796116504854369
+      },
+      "replay_ram_to_vram_traffic_change": {
+        "max": 0.11708169506334642,
+        "mean": 0.06171233827214795,
+        "min": 0.02490315439955726
+      },
+      "replay_speedup": {
+        "max": 1.0193569300621534,
+        "mean": 1.0021583183881655,
+        "min": 0.9829617729561823
+      },
+      "router_normalized_entropy": {
+        "max": 0.8880014441942725,
+        "mean": 0.8648681768838546,
+        "min": 0.8378118395274331
+      },
+      "router_selected_probability_mass": {
+        "max": 0.4713420045127104,
+        "mean": 0.43417119199845555,
+        "min": 0.40479412391472247
+      },
+      "router_temporal_overlap": {
+        "max": 0.4832899305555556,
+        "mean": 0.44091744465563504,
+        "min": 0.38535610465116277
+      }
+    },
+    "records": 10,
+    "routing_steps": 7008,
+    "tokens": 438
+  },
+  "by_seed": {
+    "17": {
+      "expert_accesses": 28032,
+      "metrics": {
+        "predictor_precision": {
+          "max": 0.4820130813953488,
+          "mean": 0.4460108017203714,
+          "min": 0.4117005813953488
+        },
+        "predictor_recall": {
+          "max": 0.4820130813953488,
+          "mean": 0.4460108017203714,
+          "min": 0.4117005813953488
+        },
+        "replay_demand_stall_reduction": {
+          "max": 0.02335560073844023,
+          "mean": 0.007406569294033716,
+          "min": -0.009535820889163382
+        },
+        "replay_prefetch_precision": {
+          "max": 0.918918918918919,
+          "mean": 0.8331188800816826,
+          "min": 0.6796116504854369
+        },
+        "replay_ram_to_vram_traffic_change": {
+          "max": 0.08550347222222232,
+          "mean": 0.049868028400913776,
+          "min": 0.02490315439955726
+        },
+        "replay_speedup": {
+          "max": 1.0193569300621534,
+          "mean": 1.0061778219777968,
+          "min": 0.9926821835347083
+        },
+        "router_normalized_entropy": {
+          "max": 0.8841517986059271,
+          "mean": 0.8632170078921447,
+          "min": 0.8378118395274331
+        },
+        "router_selected_probability_mass": {
+          "max": 0.4713420045127104,
+          "mean": 0.4367635390609176,
+          "min": 0.40569248060439184
+        },
+        "router_temporal_overlap": {
+          "max": 0.4832899305555556,
+          "mean": 0.44389692075406073,
+          "min": 0.39425872093023256
+        }
+      },
+      "records": 5,
+      "routing_steps": 3504,
+      "tokens": 219
+    },
+    "29": {
+      "expert_accesses": 28032,
+      "metrics": {
+        "predictor_precision": {
+          "max": 0.4594184027777778,
+          "mean": 0.4341362957095255,
+          "min": 0.4029796511627907
+        },
+        "predictor_recall": {
+          "max": 0.4594184027777778,
+          "mean": 0.4341362957095255,
+          "min": 0.4029796511627907
+        },
+        "replay_demand_stall_reduction": {
+          "max": 0.01733999751742854,
+          "mean": -0.0027354693402259268,
+          "min": -0.022370435019595014
+        },
+        "replay_prefetch_precision": {
+          "max": 0.8552036199095022,
+          "mean": 0.7812983842616321,
+          "min": 0.717741935483871
+        },
+        "replay_ram_to_vram_traffic_change": {
+          "max": 0.11708169506334642,
+          "mean": 0.07355664814338211,
+          "min": 0.03822714681440442
+        },
+        "replay_speedup": {
+          "max": 1.0143319231761414,
+          "mean": 0.9981388147985338,
+          "min": 0.9829617729561823
+        },
+        "router_normalized_entropy": {
+          "max": 0.8880014441942725,
+          "mean": 0.8665193458755643,
+          "min": 0.8505634068888724
+        },
+        "router_selected_probability_mass": {
+          "max": 0.44440846053082683,
+          "mean": 0.4315788449359935,
+          "min": 0.40479412391472247
+        },
+        "router_temporal_overlap": {
+          "max": 0.4811698717948718,
+          "mean": 0.43793796855720946,
+          "min": 0.38535610465116277
+        }
+      },
+      "records": 5,
+      "routing_steps": 3504,
+      "tokens": 219
+    }
+  },
+  "environment": {
+    "cuda_runtime": "13.0",
+    "gpu": "NVIDIA GeForce RTX 3080 Ti",
+    "packages": {
+      "accelerate": "1.14.0",
+      "huggingface-hub": "1.27.0",
+      "safetensors": "0.8.0",
+      "torch": "2.12.1+cu130",
+      "transformers": "5.14.1"
+    },
+    "python": "3.12.8"
+  },
+  "evidence_boundary": {
+    "capture_timing": "Accelerate CPU-offload observation; not an MoEVM runtime benchmark",
+    "replay": "simulated using provisional transfer and compute parameters",
+    "router": "captured from the real pinned model"
+  },
+  "inputs": {
+    "config": "configs/olmoe_1b_7b_0924.toml",
+    "config_sha256": "280d4a0bdb58e61612c5921b0ed1ed4b74f07330d1ecaaa4a1dfb43bd3fe3e5f",
+    "workloads": "benchmarks/workloads/olmoe_m1.json",
+    "workloads_sha256": "2cc5bb1f44ecca9fccbe22869080edbdec215f55130528f7dcfb6f4e265eec44"
+  },
+  "model": {
+    "checkpoint_shards_sha256": {
+      "model-00001-of-00003.safetensors": "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e",
+      "model-00002-of-00003.safetensors": "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7",
+      "model-00003-of-00003.safetensors": "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
+    },
+    "experts_per_layer": 64,
+    "id": "allenai/OLMoE-1B-7B-0924",
+    "layers": 16,
+    "license": "Apache-2.0",
+    "revision": "bd1c52f59153f724c1ad11ca1791edc77bab3806",
+    "top_k": 8
+  },
+  "project": {
+    "name": "moevm-lab",
+    "source_ref": "v0.2.0",
+    "version": "0.2.0"
+  },
+  "records": [
+    {
+      "analysis_path": "analysis/seed-17/domain_switch.json",
+      "capture_observation": {
+        "decode_seconds": 6.779766499999823,
+        "peak_vram_bytes": 9419148800,
+        "prefill_seconds": 0.4481436999994912,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "adversarial-domain-switch",
+      "expert_accesses": 5632,
+      "language": "mixed",
+      "replay": {
+        "baseline_l1_hit_rate": 0.5676491477272727,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.02335560073844023,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.58984375,
+        "prefetch_precision": 0.8464912280701754,
+        "ram_to_vram_traffic_change": 0.04229979466119094,
+        "speedup": 1.0193569300621534,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-17/domain_switch.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8841517986059271,
+        "mean_temporal_overlap": 0.39425872093023256,
+        "mean_topk_probability_mass": 0.40569248060439184,
+        "predictor": {
+          "correct_experts": 2266,
+          "coverage": 1.0,
+          "evaluated_steps": 688,
+          "precision": 0.4117005813953488,
+          "predicted_experts": 5504,
+          "recall": 0.4117005813953488,
+          "steps_with_predictions": 688
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 704,
+      "seed": 17,
+      "temperature": 0.7,
+      "tokens": 44,
+      "trace": {
+        "path": "traces/seed-17/domain_switch.trace.jsonl",
+        "sha256": "24fb1a443779beb03bd110bca9e59408de42614bb754f5ffb0a167007e7d5700"
+      },
+      "workload_id": "domain_switch"
+    },
+    {
+      "analysis_path": "analysis/seed-17/math_reasoning.json",
+      "capture_observation": {
+        "decode_seconds": 6.769680399998833,
+        "peak_vram_bytes": 9419148800,
+        "prefill_seconds": 0.4439115999994101,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "mathematics",
+      "expert_accesses": 5632,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6429332386363636,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.007999667830064228,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6495028409090909,
+        "prefetch_precision": 0.8759124087591241,
+        "ram_to_vram_traffic_change": 0.049726504226752954,
+        "speedup": 1.0063543296341984,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-17/math_reasoning.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8378118395274331,
+        "mean_temporal_overlap": 0.4480377906976744,
+        "mean_topk_probability_mass": 0.4227107505232032,
+        "predictor": {
+          "correct_experts": 2653,
+          "coverage": 1.0,
+          "evaluated_steps": 688,
+          "precision": 0.4820130813953488,
+          "predicted_experts": 5504,
+          "recall": 0.4820130813953488,
+          "steps_with_predictions": 688
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 704,
+      "seed": 17,
+      "temperature": 0.7,
+      "tokens": 44,
+      "trace": {
+        "path": "traces/seed-17/math_reasoning.trace.jsonl",
+        "sha256": "f189d13e39c1729e72202ad1135632d2b34a9657c3638b7e286c46fa177fe484"
+      },
+      "workload_id": "math_reasoning"
+    },
+    {
+      "analysis_path": "analysis/seed-17/python_code.json",
+      "capture_observation": {
+        "decode_seconds": 6.763209400000051,
+        "peak_vram_bytes": 9417185792,
+        "prefill_seconds": 0.44127579999985755,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "code",
+      "expert_accesses": 4736,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6184543918918919,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.012643354750241254,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6307010135135135,
+        "prefetch_precision": 0.6796116504854369,
+        "ram_to_vram_traffic_change": 0.02490315439955726,
+        "speedup": 1.0104200448797975,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-17/python_code.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8749868585874573,
+        "mean_temporal_overlap": 0.4832899305555556,
+        "mean_topk_probability_mass": 0.4713420045127104,
+        "predictor": {
+          "correct_experts": 2075,
+          "coverage": 1.0,
+          "evaluated_steps": 576,
+          "precision": 0.4503038194444444,
+          "predicted_experts": 4608,
+          "recall": 0.4503038194444444,
+          "steps_with_predictions": 576
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 592,
+      "seed": 17,
+      "temperature": 0.7,
+      "tokens": 37,
+      "trace": {
+        "path": "traces/seed-17/python_code.trace.jsonl",
+        "sha256": "da14e0844780c0dec9d37ddac79c609b0ac2120d4e3e227442458ef5f6037d05"
+      },
+      "workload_id": "python_code"
+    },
+    {
+      "analysis_path": "analysis/seed-17/systems_en.json",
+      "capture_observation": {
+        "decode_seconds": 7.230611200000567,
+        "peak_vram_bytes": 9418022400,
+        "prefill_seconds": 1.2596212999997078,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "systems",
+      "expert_accesses": 5120,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.62109375,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.00257004404058625,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6234375,
+        "prefetch_precision": 0.8446601941747572,
+        "ram_to_vram_traffic_change": 0.046907216494845416,
+        "speedup": 1.002075621778127,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-17/systems_en.json",
+      "router": {
+        "exact_repeat_rate": 0.0016025641025641025,
+        "mean_normalized_entropy": 0.8578629881915968,
+        "mean_temporal_overlap": 0.4599358974358974,
+        "mean_topk_probability_mass": 0.42656577814886987,
+        "predictor": {
+          "correct_experts": 2192,
+          "coverage": 1.0,
+          "evaluated_steps": 624,
+          "precision": 0.4391025641025641,
+          "predicted_experts": 4992,
+          "recall": 0.4391025641025641,
+          "steps_with_predictions": 624
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 640,
+      "seed": 17,
+      "temperature": 0.7,
+      "tokens": 40,
+      "trace": {
+        "path": "traces/seed-17/systems_en.trace.jsonl",
+        "sha256": "a69d81913d9260f05140c5dd27cc9d3dffeaeb00aed867b7029893d70955af94"
+      },
+      "workload_id": "systems_en"
+    },
+    {
+      "analysis_path": "analysis/seed-17/systems_it.json",
+      "capture_observation": {
+        "decode_seconds": 6.76328999999896,
+        "peak_vram_bytes": 9422426112,
+        "prefill_seconds": 0.45684520000031625,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "systems",
+      "expert_accesses": 6912,
+      "language": "it",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6666666666666666,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": -0.009535820889163382,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6595775462962963,
+        "prefetch_precision": 0.918918918918919,
+        "ram_to_vram_traffic_change": 0.08550347222222232,
+        "speedup": 0.9926821835347083,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-17/systems_it.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8612715545483098,
+        "mean_temporal_overlap": 0.4339622641509434,
+        "mean_topk_probability_mass": 0.4575066815154127,
+        "predictor": {
+          "correct_experts": 3032,
+          "coverage": 1.0,
+          "evaluated_steps": 848,
+          "precision": 0.44693396226415094,
+          "predicted_experts": 6784,
+          "recall": 0.44693396226415094,
+          "steps_with_predictions": 848
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 864,
+      "seed": 17,
+      "temperature": 0.7,
+      "tokens": 54,
+      "trace": {
+        "path": "traces/seed-17/systems_it.trace.jsonl",
+        "sha256": "ef1651a5a3090c16b1d82504dac3b7b7ab2e3287acac880fd7400ed60383d738"
+      },
+      "workload_id": "systems_it"
+    },
+    {
+      "analysis_path": "analysis/seed-29/domain_switch.json",
+      "capture_observation": {
+        "decode_seconds": 6.868547199999739,
+        "peak_vram_bytes": 9419148800,
+        "prefill_seconds": 0.4517321000002994,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "adversarial-domain-switch",
+      "expert_accesses": 5632,
+      "language": "mixed",
+      "replay": {
+        "baseline_l1_hit_rate": 0.5616122159090909,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.01733999751742854,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.5783025568181818,
+        "prefetch_precision": 0.8552036199095022,
+        "ram_to_vram_traffic_change": 0.05143782908059946,
+        "speedup": 1.0143319231761414,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-29/domain_switch.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8880014441942725,
+        "mean_temporal_overlap": 0.38535610465116277,
+        "mean_topk_probability_mass": 0.40479412391472247,
+        "predictor": {
+          "correct_experts": 2218,
+          "coverage": 1.0,
+          "evaluated_steps": 688,
+          "precision": 0.4029796511627907,
+          "predicted_experts": 5504,
+          "recall": 0.4029796511627907,
+          "steps_with_predictions": 688
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 704,
+      "seed": 29,
+      "temperature": 0.7,
+      "tokens": 44,
+      "trace": {
+        "path": "traces/seed-29/domain_switch.trace.jsonl",
+        "sha256": "4e1381279e6943443bb98c5ff720f950d4a8e31fe8c3723019bf3e3da803d95f"
+      },
+      "workload_id": "domain_switch"
+    },
+    {
+      "analysis_path": "analysis/seed-29/math_reasoning.json",
+      "capture_observation": {
+        "decode_seconds": 6.885977500000081,
+        "peak_vram_bytes": 9419148800,
+        "prefill_seconds": 0.4528338999989501,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "mathematics",
+      "expert_accesses": 5632,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6613991477272727,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": -0.009850301392364758,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6534090909090909,
+        "prefetch_precision": 0.717741935483871,
+        "ram_to_vram_traffic_change": 0.08862087047718936,
+        "speedup": 0.992292608974795,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-29/math_reasoning.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8514890245713007,
+        "mean_temporal_overlap": 0.43768168604651164,
+        "mean_topk_probability_mass": 0.43426316921779123,
+        "predictor": {
+          "correct_experts": 2514,
+          "coverage": 1.0,
+          "evaluated_steps": 688,
+          "precision": 0.45675872093023256,
+          "predicted_experts": 5504,
+          "recall": 0.45675872093023256,
+          "steps_with_predictions": 688
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 704,
+      "seed": 29,
+      "temperature": 0.7,
+      "tokens": 44,
+      "trace": {
+        "path": "traces/seed-29/math_reasoning.trace.jsonl",
+        "sha256": "a77c8af20e83d471a6ddd34577b99d83c4e649ed49717916f8ca85f5efba97a3"
+      },
+      "workload_id": "math_reasoning"
+    },
+    {
+      "analysis_path": "analysis/seed-29/python_code.json",
+      "capture_observation": {
+        "decode_seconds": 6.8896277000003465,
+        "peak_vram_bytes": 9417185792,
+        "prefill_seconds": 0.44872790000044915,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "code",
+      "expert_accesses": 4736,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6188766891891891,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": 0.008042222710662461,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6264780405405406,
+        "prefetch_precision": 0.7238095238095238,
+        "ram_to_vram_traffic_change": 0.03822714681440442,
+        "speedup": 1.006567061785849,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-29/python_code.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8505634068888724,
+        "mean_temporal_overlap": 0.4678819444444444,
+        "mean_topk_probability_mass": 0.44440846053082683,
+        "predictor": {
+          "correct_experts": 2117,
+          "coverage": 1.0,
+          "evaluated_steps": 576,
+          "precision": 0.4594184027777778,
+          "predicted_experts": 4608,
+          "recall": 0.4594184027777778,
+          "steps_with_predictions": 576
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 592,
+      "seed": 29,
+      "temperature": 0.7,
+      "tokens": 37,
+      "trace": {
+        "path": "traces/seed-29/python_code.trace.jsonl",
+        "sha256": "e100bd48501f75b4428f3d1f83c77a56a7414654707304dce1aa4577564adbd9"
+      },
+      "workload_id": "python_code"
+    },
+    {
+      "analysis_path": "analysis/seed-29/systems_en.json",
+      "capture_observation": {
+        "decode_seconds": 7.051088999998683,
+        "peak_vram_bytes": 9418022400,
+        "prefill_seconds": 1.1952318000003288,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "systems",
+      "expert_accesses": 5120,
+      "language": "en",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6466796875,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": -0.006838830517260863,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.640625,
+        "prefetch_precision": 0.84,
+        "ram_to_vram_traffic_change": 0.07241569928137093,
+        "speedup": 0.9945407070997018,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-29/systems_en.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8605458499773407,
+        "mean_temporal_overlap": 0.4811698717948718,
+        "mean_topk_probability_mass": 0.4348589090102905,
+        "predictor": {
+          "correct_experts": 2200,
+          "coverage": 1.0,
+          "evaluated_steps": 624,
+          "precision": 0.4407051282051282,
+          "predicted_experts": 4992,
+          "recall": 0.4407051282051282,
+          "steps_with_predictions": 624
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 640,
+      "seed": 29,
+      "temperature": 0.7,
+      "tokens": 40,
+      "trace": {
+        "path": "traces/seed-29/systems_en.trace.jsonl",
+        "sha256": "a8f579f3f78ae690e3b6037e8ba1bab640c508fbba953ab9fad56e2f9b8a3ae9"
+      },
+      "workload_id": "systems_en"
+    },
+    {
+      "analysis_path": "analysis/seed-29/systems_it.json",
+      "capture_observation": {
+        "decode_seconds": 6.880739000000176,
+        "peak_vram_bytes": 9422295040,
+        "prefill_seconds": 0.45156719999977213,
+        "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark."
+      },
+      "category": "systems",
+      "expert_accesses": 6912,
+      "language": "it",
+      "replay": {
+        "baseline_l1_hit_rate": 0.6688368055555556,
+        "demand_nvme_reduction": 0.0,
+        "demand_stall_reduction": -0.022370435019595014,
+        "evidence_label": "trace replay; simulated timing",
+        "prefetch_l1_hit_rate": 0.6520543981481481,
+        "prefetch_precision": 0.7697368421052632,
+        "ram_to_vram_traffic_change": 0.11708169506334642,
+        "speedup": 0.9829617729561823,
+        "total_nvme_reduction": 0.0
+      },
+      "replay_path": "replays/seed-29/systems_it.json",
+      "router": {
+        "exact_repeat_rate": 0.0,
+        "mean_normalized_entropy": 0.8819970037460353,
+        "mean_temporal_overlap": 0.4176002358490566,
+        "mean_topk_probability_mass": 0.43956956200633646,
+        "predictor": {
+          "correct_experts": 2787,
+          "coverage": 1.0,
+          "evaluated_steps": 848,
+          "precision": 0.4108195754716981,
+          "predicted_experts": 6784,
+          "recall": 0.4108195754716981,
+          "steps_with_predictions": 848
+        },
+        "score_coverage": 1.0
+      },
+      "routing_steps": 864,
+      "seed": 29,
+      "temperature": 0.7,
+      "tokens": 54,
+      "trace": {
+        "path": "traces/seed-29/systems_it.trace.jsonl",
+        "sha256": "a7be74e7ff0615195db480ece5bf4104a8195a463881233cc931336d47ef5e5e"
+      },
+      "workload_id": "systems_it"
+    }
+  ],
+  "schema_version": 1
+}

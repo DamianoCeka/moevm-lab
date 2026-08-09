@@ -3,6 +3,9 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.cache/
+models/
+offload/
 build/
 dist/
 .pytest_cache/
@@ -13,6 +16,7 @@ htmlcov/
 results/**
 !results/.gitkeep
 *.trace.jsonl
+!benchmarks/reference/**/*.trace.jsonl
 .DS_Store
 Thumbs.db
 .vscode/

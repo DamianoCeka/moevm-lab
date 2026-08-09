@@ -5,6 +5,7 @@
 Every result must be labeled as exactly one of:
 
 - **simulation** — no real model execution;
+- **routing capture** — real router decisions and scores, without transfer claims;
 - **trace replay** — real routing decisions, simulated or measured transfers;
 - **microbenchmark** — real transfer/kernel measurement without full generation;
 - **end-to-end** — real model generation with quality checks.
@@ -50,4 +51,12 @@ A real backend advances toward a K3 adapter only after it beats a public baselin
 
 ```bash
 python -m moevm compare --config configs/toy.toml --tokens 64 --output-dir results/toy
+```
+
+Real-routing reference replay:
+
+```bash
+python -m moevm compare --config configs/olmoe_1b_7b_0924.toml \
+  --trace benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/systems_en.trace.jsonl \
+  --no-write
 ```

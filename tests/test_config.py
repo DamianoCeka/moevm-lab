@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from moevm import __version__
 from moevm.cli import _bundled_config
 from moevm.config import HardwareConfig, load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_version_metadata_is_consistent(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with (root / "pyproject.toml").open("rb") as handle:
+            project_version = tomllib.load(handle)["project"]["version"]
+
+        self.assertEqual(project_version, __version__)
+        self.assertIn(
+            f"version: {project_version}",
+            (root / "CITATION.cff").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f"## {project_version} —",
+            (root / "CHANGELOG.md").read_text(encoding="utf-8"),
+        )
+
     def test_loads_toy_config(self) -> None:
         root = Path(__file__).resolve().parents[1]
         config = load_config(root / "configs" / "toy.toml")
@@ -49,6 +66,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             Path(_bundled_config("k3_shape.toml")).read_bytes(),
             (root / "configs" / "k3_shape.toml").read_bytes(),
+        )
+        self.assertEqual(
+            Path(_bundled_config("olmoe_1b_7b_0924.toml")).read_bytes(),
+            (root / "configs" / "olmoe_1b_7b_0924.toml").read_bytes(),
         )
 
 
