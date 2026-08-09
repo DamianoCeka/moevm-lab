@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -13,6 +14,15 @@ def _json_integer(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{field} must be an integer")
     return value
+
+
+def _json_probability(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    converted = float(value)
+    if not math.isfinite(converted) or not 0.0 <= converted <= 1.0:
+        raise ValueError(f"{field} must be a finite probability in [0, 1]")
+    return converted
 
 
 class SyntheticRoutingTrace:
@@ -106,13 +116,16 @@ def write_trace(path: str | Path, steps: Iterable[RoutingStep]) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
         for step in steps:
+            row: dict[str, object] = {
+                "token": step.token_index,
+                "layer": step.layer_index,
+                "experts": list(step.experts),
+            }
+            if step.scores is not None:
+                row["scores"] = list(step.scores)
             handle.write(
                 json.dumps(
-                    {
-                        "token": step.token_index,
-                        "layer": step.layer_index,
-                        "experts": list(step.experts),
-                    },
+                    row,
                     separators=(",", ":"),
                 )
                 + "\n"
@@ -136,12 +149,23 @@ def read_trace(path: str | Path) -> list[RoutingStep]:
                 experts = row["experts"]
                 if not isinstance(experts, list):
                     raise ValueError("experts must be a JSON array")
+                raw_scores = row.get("scores")
+                if raw_scores is not None and not isinstance(raw_scores, list):
+                    raise ValueError("scores must be a JSON array")
                 steps.append(
                     RoutingStep(
                         token_index=_json_integer(row["token"], "token"),
                         layer_index=_json_integer(row["layer"], "layer"),
                         experts=tuple(
                             _json_integer(value, "expert") for value in experts
+                        ),
+                        scores=(
+                            tuple(
+                                _json_probability(value, "score")
+                                for value in raw_scores
+                            )
+                            if raw_scores is not None
+                            else None
                         ),
                     )
                 )

@@ -1,4 +1,12 @@
 include configs/*.toml
+include CHANGELOG.md
+include CITATION.cff
+include CONTRIBUTING.md
 include LICENSE
 include NOTICE
+include SECURITY.md
+recursive-include benchmarks *.csv *.json *.jsonl *.md
+recursive-include docs *.md
+recursive-include scripts *.ps1 *.py *.sh
 recursive-include src/moevm/configs *.toml
+recursive-include tests *.py

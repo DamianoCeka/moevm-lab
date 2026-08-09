@@ -10,15 +10,17 @@
 - [x] baseline comparison and machine-readable reports;
 - [x] Windows bootstrap and CI.
 
-## M1 — Real routing evidence
+## M1 — Real routing evidence ✅
 
-- [ ] select a small, runnable open MoE as the first target;
-- [ ] capture `(token, layer, selected experts, router scores)`;
-- [ ] anonymize prompts and store trace metadata;
-- [ ] compare synthetic versus real locality, entropy and transition stability;
-- [ ] add prediction confidence and no-prefetch admission thresholds.
+- [x] select a small, runnable open MoE as the first target;
+- [x] capture `(token, layer, selected experts, router scores)`;
+- [x] use controlled non-private prompts and store trace metadata;
+- [x] compare synthetic versus real locality, entropy and transition stability;
+- [x] add prediction confidence and no-prefetch admission thresholds.
 
-**Exit criterion:** predictor and cache results reproduced on real routing decisions.
+**Exit criterion met:** ten trace captures across two seeds are committed with
+hashes, analysis and golden replay results. The result is approximately neutral
+on speedup and negative on transfer traffic, which defines the M2/M3 work.
 
 ## M2 — Hardware-calibrated replay
 

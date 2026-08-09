@@ -6,6 +6,11 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .analysis import (
+    analyze_routing_trace,
+    trace_analysis_console,
+    write_trace_analysis,
+)
 from .config import ExperimentConfig, load_config
 from .report import comparison_console, write_comparison
 from .simulator import compare_experiment, run_experiment
@@ -81,6 +86,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--config", default=_bundled_config("toy.toml"))
 
+    analyze = subparsers.add_parser(
+        "analyze-trace",
+        help="measure locality, router confidence, and online predictability",
+    )
+    analyze.add_argument("--config", default=_bundled_config("toy.toml"))
+    analyze.add_argument("--trace", required=True, help="JSONL routing trace")
+    analyze.add_argument(
+        "--output-dir",
+        default="results/trace-analysis",
+        help="analysis report directory",
+    )
+    analyze.add_argument(
+        "--no-write", action="store_true", help="print without writing reports"
+    )
+
     return parser
 
 
@@ -152,6 +172,33 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "doctor":
             print(_doctor(config))
+            return 0
+
+        if args.command == "analyze-trace":
+            steps = read_trace(args.trace)
+            analysis = analyze_routing_trace(
+                steps,
+                experts_per_layer=config.model.experts_per_layer,
+                predictor_config=config.predictor,
+            )
+            if analysis.layers != config.model.layers:
+                raise ValueError(
+                    "trace layer count does not match model.layers: "
+                    f"{analysis.layers} != {config.model.layers}"
+                )
+            if analysis.top_k != config.model.top_k:
+                raise ValueError(
+                    "trace top-k does not match model.top_k: "
+                    f"{analysis.top_k} != {config.model.top_k}"
+                )
+            print(trace_analysis_console(analysis))
+            if not args.no_write:
+                json_path, markdown_path = write_trace_analysis(
+                    args.output_dir,
+                    analysis,
+                    trace_path=args.trace,
+                )
+                print(f"\nWrote {json_path} and {markdown_path}")
             return 0
 
         parser.error(f"unknown command: {args.command}")

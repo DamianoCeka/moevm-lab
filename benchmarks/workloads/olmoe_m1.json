@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "description": "Controlled, non-private workloads for the OLMoE real-routing M1 study.",
+  "workloads": [
+    {
+      "id": "systems_en",
+      "category": "systems",
+      "language": "en",
+      "prompt": "Explain how asynchronous expert prefetch can hide memory-transfer latency in a sparse mixture-of-experts model."
+    },
+    {
+      "id": "systems_it",
+      "category": "systems",
+      "language": "it",
+      "prompt": "Spiega in modo tecnico come una cache gerarchica GPU, RAM e NVMe puo servire gli esperti di un modello mixture-of-experts."
+    },
+    {
+      "id": "python_code",
+      "category": "code",
+      "language": "en",
+      "prompt": "Write a concise Python function that computes the Jaccard similarity of two sets, then explain its complexity."
+    },
+    {
+      "id": "math_reasoning",
+      "category": "mathematics",
+      "language": "en",
+      "prompt": "A cache holds 128 experts and each token selects 8 experts. Derive the expected hit count when the independent hit probability is 0.75."
+    },
+    {
+      "id": "domain_switch",
+      "category": "adversarial-domain-switch",
+      "language": "mixed",
+      "prompt": "Translate 'memory bandwidth' into Italian. Next, give a Rust ownership rule. Finally, factor 221 and name a Baroque composer."
+    }
+  ]
+}
