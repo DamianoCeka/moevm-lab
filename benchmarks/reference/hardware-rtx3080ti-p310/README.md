@@ -50,6 +50,11 @@ was used.
 The machine-readable record is in `calibration.json`. Raw XML and JSON are kept
 locally under the ignored directory
 `results/hardware-calibration/2026-08-10-p310/`.
+`measurement-evidence.json` retains the sanitized per-repetition values and
+SHA-256 digests needed to reconstruct every reported median and fit. The
+measurements were taken from an uncommitted worktree based on the recorded base
+commit; the same benchmark implementation was then committed at the separately
+recorded implementation commit.
 
 ## Safety and integrity
 

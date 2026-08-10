@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Added read-only storage and CUDA transfer benchmarks plus a reproducible
+  Crucial P2/P310 and RTX 3080 Ti hardware evidence package.
+- Added per-expert fixed-latency modeling; the measured P310 profile moves the
+  existing real-trace prefetch replay to `0.9791x` with +4.91% RAM-to-VRAM
+  traffic.
+- Added audited static/hybrid placement analysis with a strict exploratory
+  leave-one-workload-out protocol and explicit preload accounting.
+- Added a bounded read-only safetensors expert store, per-layer LRU/static/hybrid
+  GPU slots, pinned staging and a synchronous Transformers expert backend.
+- Added exact tiny-model CPU/CUDA checks and the first guarded full OLMoE paged
+  smoke: matching token IDs, 21.34% lower observed peak allocated VRAM, a slower
+  empty-cache pass and a faster retained-cache repeat under stated limitations.
+
 ## 0.2.0 — 2026-08-09
 
 - Captured router decisions and top-k probabilities from the pinned open

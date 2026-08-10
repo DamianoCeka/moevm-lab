@@ -12,6 +12,18 @@ zero shared workload IDs and zero shared step addresses. Its result is still
 **exploratory**, because the 40-slot capacity and 32/8 hybrid split were not
 chosen inside nested validation and the traces are short.
 
+| Policy | Hit rate | Demand traffic | Preload | Total traffic |
+|---|---:|---:|---:|---:|
+| Cold LRU | 78.8492% | 69.4805 GiB | 0 GiB | 69.4805 GiB |
+| Static hot | 84.8031% | 49.9219 GiB | 37.5 GiB | 87.4219 GiB |
+| Hybrid 32 hot + 8 LRU | 86.5083% | 44.3203 GiB | 30 GiB | 74.3203 GiB |
+
+Hybrid placement reduces demand traffic by 36.21%, but its preload makes total
+traffic 6.9658% higher than cold LRU on these short traces. Static placement
+assumes a scratch path for misses outside its declared resident capacity.
+Forty 12 MiB slots per layer equal 7.5 GiB across 16 layers; this is not the
+same budget as the full-runtime LRU32 smoke, which uses 6 GiB.
+
 The cross-seed train/test protocol is a secondary stability check and is
 **non-independent**. Seeds 17 and 29 use distinct files and hashes, but share
 the same five workload prompts and all 3,504 `(workload, token, layer)` step
@@ -52,3 +64,7 @@ sets LF explicitly, including on Windows, and the golden test hashes its actual
 output bytes.
 
 These are trace-replay metrics, not measured runtime latency or throughput.
+The replay accesses experts sequentially for each token. The paged runtime
+groups unique active experts per layer during prefill, changing both ordering
+and request count. Placement and runtime hit rates therefore must not be
+compared directly.

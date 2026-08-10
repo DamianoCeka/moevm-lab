@@ -24,24 +24,35 @@ on speedup and negative on transfer traffic, which defines the M2/M3 work.
 
 ## M2 — Hardware-calibrated replay
 
-- [ ] benchmark pageable RAM, pinned RAM and mapped host memory;
-- [ ] measure NVMe sequential and random read behavior at expert-sized blocks;
+- [x] benchmark pageable and pinned RAM-to-VRAM paths;
+- [ ] measure mapped host memory as a separate execution path;
+- [x] measure NVMe random read behavior at expert-sized blocks and multiple
+  queue depths;
 - [ ] model PCIe copy engines and queue depth;
-- [ ] calibrate transfer functions from measured data;
-- [ ] publish a hardware profile for the development workstation.
+- [x] calibrate transfer functions from measured data;
+- [x] publish a reproducible hardware profile for the development workstation.
 
-**Exit criterion:** trace replay estimates track microbenchmarks within a documented error band.
+The first calibrated P310 replay is `0.9791x` for the current predictor and
+adds 4.91% RAM-to-VRAM traffic. **Exit criterion still open:** the isolated
+transfer functions are reproducible, but trace-replay estimates have not yet
+been shown to track end-to-end measurements within a documented error band.
 
 ## M3 — Small-MoE runtime prototype
 
-- [ ] PyTorch/C++ extension or focused vLLM integration;
-- [ ] expert slot map and protected miss buffer;
-- [ ] pinned-memory backing store;
+- [x] focused PyTorch/Transformers expert-backend integration;
+- [x] per-layer expert slot map and bounded transactional staging path;
+- [x] bounded pinned-memory staging buffer;
+- [ ] pinned host expert cache;
 - [ ] asynchronous copies with CUDA streams/events;
-- [ ] correctness tests against fully resident inference;
-- [ ] first end-to-end tokens/s benchmark.
+- [x] exact tiny-model logits/generation tests and a full-model greedy-token
+  parity gate;
+- [x] first controlled full-model tokens/s and VRAM smoke measurement;
 
-**Exit criterion:** measurable improvement or capacity gain on a real model.
+The first LRU32 OLMoE smoke reduces observed peak allocated VRAM by 21.34% and
+the retained-cache pass is faster than the matching CPU-offload capture, while
+the empty-cache pass is slower. **Exit criterion still open:** one prompt, two
+generated tokens and uncontrolled OS-cache state are insufficient to establish
+a repeatable improvement across workloads and sequence lengths.
 
 ## M4 — Storage-aware expert runtime
 

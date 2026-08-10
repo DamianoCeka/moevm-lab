@@ -54,6 +54,14 @@ class HardwareCalibrationReferenceTests(unittest.TestCase):
             / "calibration.json"
         )
         reference = json.loads(reference_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            reference["repository_base_commit_at_measurement"],
+            "15dfc313f8995e7fdaee8023d52dad18c59f2f92",
+        )
+        self.assertEqual(
+            reference["benchmark_implementation_commit"],
+            "ee6a4ec8817449779d8dfb08bb560d0cd1be2661",
+        )
         config = load_config(root / reference["calibrated_replay"]["config"])
 
         pinned_sync = reference["ram_to_vram"]["cases"]["pinned_sync"]

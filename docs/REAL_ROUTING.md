@@ -10,8 +10,10 @@ This milestone contains two different kinds of evidence:
    provisional compute, RAM, PCIe and NVMe parameters.
 
 The capture timings come from Transformers with Accelerate CPU offload. They are
-recorded for auditability only and are not a MoEVM runtime benchmark. The project
-still has no expert-offload execution backend.
+recorded for auditability only and are not a production baseline. At the v0.2.0
+M1 checkpoint the project still had no expert-offload execution backend. The
+subsequent unreleased M3 prototype uses a deterministic two-token capture as a
+controlled correctness and timing reference for its first paged-runtime smoke.
 
 ## Model and reproducibility
 
@@ -104,9 +106,24 @@ access or Developer Mode.
 - 438 tokens are enough to falsify the very-high-locality assumption, not to
   characterize all languages, tasks or sequence lengths.
 - OLMoE is a base checkpoint; generation quality is not evaluated here.
-- CPU-offloaded Transformers execution is not the baseline that M3 must beat.
-- Replay bandwidth and compute latency are hypotheses, not workstation
-  microbenchmarks.
+- CPU-offloaded Transformers execution is a controlled reference, not the
+  production baseline that a future runtime must beat.
+- The original `1.0022x` M1 replay used provisional hardware parameters and
+  remains the historical v0.2 result.
 
-M2 will measure pinned/pageable host memory, PCIe copies and expert-sized NVMe
-reads, then calibrate the event model with error bands before runtime work begins.
+## Post-M1 measured follow-up
+
+Unreleased M2 work measured pinned/pageable RAM-to-VRAM copies and expert-sized
+NVMe reads. Replaying the same ten traces with the measured P310 profile and
+per-expert fixed latency produces `0.9791x` aggregate speedup and +4.91%
+RAM-to-VRAM traffic. This calibrated result is distinct from the historical M1
+number and is still simulation.
+
+Unreleased M3 work adds a read-only safetensors expert store, bounded per-layer
+GPU slots and a synchronous Transformers expert backend. Its first full OLMoE
+smoke matches the two greedy reference token IDs, uses 21.34% less observed peak
+allocated VRAM, loses end-to-end with an empty expert cache, and wins on a
+retained-cache repeat. One prompt and one decode interval do not establish a
+general speedup. See the [hardware profile](../benchmarks/reference/hardware-rtx3080ti-p310/README.md),
+[placement study](../benchmarks/reference/real-routing-olmoe-m1/placement/README.md),
+and [runtime evidence](../benchmarks/reference/paged-runtime-olmoe-p310-smoke/README.md).

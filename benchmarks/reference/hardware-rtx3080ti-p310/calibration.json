@@ -2,7 +2,9 @@
   "schema_version": 1,
   "evidence_label": "local hardware microbenchmark",
   "measured_at": "2026-08-10",
-  "source_commit": "15dfc313f8995e7fdaee8023d52dad18c59f2f92",
+  "repository_base_commit_at_measurement": "15dfc313f8995e7fdaee8023d52dad18c59f2f92",
+  "benchmark_implementation_commit": "ee6a4ec8817449779d8dfb08bb560d0cd1be2661",
+  "measurement_worktree_state": "The benchmark implementation was uncommitted during measurement and was subsequently committed at benchmark_implementation_commit; measurement-evidence.json anchors the exact raw outputs.",
   "host": {
     "gpu": "NVIDIA GeForce RTX 3080 Ti",
     "gpu_memory_mib": 12288,
