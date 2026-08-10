@@ -312,12 +312,15 @@ def _capture_workload(
     )
 
     generated_ids: list[int] = []
+    decode_forward_seconds: list[float] = []
     decode_started = time.perf_counter()
     with torch.inference_mode():
         for decode_index in range(args.max_new_tokens):
             next_token = _select_token(torch, output.logits[:, -1, :], args.temperature)
             token_id = int(next_token.item())
             generated_ids.append(token_id)
+            _sync_cuda(torch)
+            forward_started = time.perf_counter()
             output = model(
                 input_ids=next_token.to(input_device),
                 past_key_values=output.past_key_values,
@@ -325,6 +328,8 @@ def _capture_workload(
                 output_router_logits=True,
                 logits_to_keep=1,
             )
+            _sync_cuda(torch)
+            decode_forward_seconds.append(time.perf_counter() - forward_started)
             rows.extend(
                 _router_rows(
                     torch,
@@ -338,6 +343,8 @@ def _capture_workload(
             )
     _sync_cuda(torch)
     decode_seconds = time.perf_counter() - decode_started
+    generation_decode_seconds = sum(decode_forward_seconds[:-1])
+    generation_wall_seconds = prefill_seconds + generation_decode_seconds
 
     trace_path = output_dir / f"{workload['id']}.trace.jsonl"
     _write_trace_rows(trace_path, rows)
@@ -397,6 +404,22 @@ def _capture_workload(
             "warning": "Model execution with Accelerate CPU offload; not an MoEVM runtime benchmark.",
             "prefill_seconds": prefill_seconds,
             "decode_seconds": decode_seconds,
+            "decode_forward_seconds": decode_forward_seconds,
+            "generation_decode_seconds": generation_decode_seconds,
+            "routing_only_final_forward_seconds": (
+                decode_forward_seconds[-1] if decode_forward_seconds else 0.0
+            ),
+            "generation_wall_seconds": generation_wall_seconds,
+            "generation_tokens_per_second_including_prefill": (
+                len(generated_ids) / generation_wall_seconds
+                if generation_wall_seconds
+                else 0.0
+            ),
+            "decode_tokens_per_second": (
+                (len(generated_ids) - 1) / generation_decode_seconds
+                if len(generated_ids) > 1 and generation_decode_seconds
+                else 0.0
+            ),
         },
         "trace": {
             "path": str(trace_path),

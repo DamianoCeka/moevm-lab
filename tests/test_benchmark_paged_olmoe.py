@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,17 @@ _SPEC.loader.exec_module(_HARNESS)
 
 
 class PagedOlmoeHarnessTests(unittest.TestCase):
+    def test_process_memory_reports_current_rss_when_supported(self) -> None:
+        memory = _HARNESS._process_memory()
+
+        self.assertIn("rss_bytes", memory)
+        self.assertIn("peak_rss_bytes", memory)
+        if sys.platform in ("win32", "linux"):
+            self.assertIsInstance(memory["rss_bytes"], int)
+            self.assertGreater(memory["rss_bytes"], 0)
+            self.assertIsInstance(memory["peak_rss_bytes"], int)
+            self.assertGreaterEqual(memory["peak_rss_bytes"], memory["rss_bytes"])
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
