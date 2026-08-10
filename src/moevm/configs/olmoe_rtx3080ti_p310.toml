@@ -1,0 +1,46 @@
+[model]
+name = "allenai/OLMoE-1B-7B-0924"
+layers = 16
+experts_per_layer = 64
+top_k = 8
+expert_size_mib = 12.0
+# Provisional replay parameter, not a measured OLMoE kernel latency.
+compute_ms_per_layer = 1.0
+
+[hardware]
+# Local calibration captured on 2026-08-10 with an RTX 3080 Ti operating at
+# PCIe 4.0 x8 and a Crucial P310 (CT1000P310SSD8). See the checked-in hardware
+# calibration report for method, uncertainty, and raw-result location.
+# Experimental replay budgets, not directly measured hardware properties.
+vram_cache_mib = 4096.0
+ram_cache_mib = 12288.0
+ram_to_vram_gbps = 13.0
+nvme_to_ram_gbps = 6.04
+ram_latency_us = 22.3
+nvme_latency_us = 299.0
+# The fitted intercepts were measured per sequential 12 MiB expert transfer.
+fixed_latency_scope = "per_expert"
+# Still provisional until overlap is measured inside the real paged runtime.
+overlap_efficiency = 0.85
+# Experimental policy split, not a calibrated transfer-path property.
+prefetch_vram_fraction = 0.125
+
+[trace]
+# Used only when generating a synthetic trace; ignored when --trace is supplied.
+tokens = 64
+domains = 4
+domain_switch_probability = 0.08
+hotset_multiplier = 3.0
+temporal_reuse_probability = 0.50
+random_expert_probability = 0.10
+seed = 17
+
+[predictor]
+enabled = true
+prefetch_count = 8
+frequency_weight = 0.0
+temporal_weight = 5.0
+cross_layer_weight = 1.0
+max_targets_per_source = 64
+min_relative_confidence = 0.15
+deadline_aware = true

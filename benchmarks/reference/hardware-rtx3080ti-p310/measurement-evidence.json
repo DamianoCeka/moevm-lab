@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "evidence_scope": "Sanitized per-repetition inputs sufficient to reconstruct the storage and RAM-to-VRAM medians and linear fits in calibration.json.",
+  "privacy": "Raw files remain local because they contain host/path metadata; this record retains only benchmark metrics, non-identifying device labels, raw basenames, and SHA-256 digests.",
+  "raw_files_sha256": {
+    "cuda-transfer-12m-long-r1.json": "f08c8ec07641e10a95c7cff08544217c02892020c4ab2699e72266cb8def6736",
+    "cuda-transfer-12m-long-r2.json": "565f30d5ecb5b004c64cabab1716e698fa2ae3b52481010433457d14ee2cfad0",
+    "cuda-transfer-12m-long-r3.json": "3e83fa477d563c0d68a4ec048a28d7c55dd86fe6f002c0b9fa33ea8fb7c48588",
+    "cuda-transfer-1m-r1.json": "085744d0df9c2fb9aca2c752f03ebf1f9bf69c49257259ccf2fadc2e89f834cb",
+    "cuda-transfer-1m-r2.json": "01f47048e09a3816c3522a0d08c77d7daa5e3e952106c77e29b9f2ed1f1e8d39",
+    "cuda-transfer-1m-r3.json": "81bc1ac37e68f8c6df1747fbdd76492356bb1ffb4ba593ac241c64b2d139e27c",
+    "cuda-transfer-4m-r1.json": "114ff355a47912948f384ba7eaf0288d60941b49525f5fa06bf5c513db77dbf3",
+    "cuda-transfer-4m-r2.json": "0890214d63612ed0c6c3b24a2be979d2f7b7b32c1cc1c5a92a8af3b201102fed",
+    "cuda-transfer-4m-r3.json": "55a67bf04185ee43216625534333d0634a3c206b5374a3bf2f3d3d38decacacb",
+    "p2-b1m-q1-r1.xml": "8b9d1559dd8ad129361fdc135516aa1f907939ea9b87ca4083d7c491528f9ee3",
+    "p2-b1m-q1-r2.xml": "866b4cae93d6313476df307dba113868f6d8607bf79f522b794ad4fa22dd136e",
+    "p2-b4m-q1-r1.xml": "92844a044b8765803010f18106d5f29855cef15fa6fb67de5927ff3cd8d14b1e",
+    "p2-b4m-q1-r2.xml": "57305407695a1763bb58a66147dce8a88195a641a64f55bc24e57d0b72a0eac4",
+    "p2-q1-r1.xml": "5516ccc9c8fd12c6e719cc4f914b2ba0b0ef3fc953fc03768d705a56ca020cb0",
+    "p2-q1-r2.xml": "665d33ebe4fb15498643ba8feefa6c62340d7382c86795e447c774b2ff31d86e",
+    "p2-q1-r3.xml": "62810b2eb7d27115f5fdb7cb48e9cd39bba21f813d13e3ae3fa9568817be7cc3",
+    "p2-q8-r1.xml": "80242d4935cd598fd6841823cae7c53b71597e7a87bd3b1d809744f67bfdb7c2",
+    "p2-q8-r2.xml": "6186dddde87db44c133f34e4fb75a8c76379c332a84ba8b4339a2f6dfedcef8e",
+    "p310-b1m-q1-r1.xml": "8409ce3482eb8fa74a89ed861b9f6942898afd49c822ba76b9c76eb6d12ad581",
+    "p310-b1m-q1-r2.xml": "08fd8d5339e6a0275ffce0fddfa8473277389d92239e6675d97204b9a4b68f54",
+    "p310-b4m-q1-r1.xml": "d1049e3f158ad2938242be7b5228782faf4a0e3075b38eb417610f1c8c325a2b",
+    "p310-b4m-q1-r2.xml": "bfd4312d4eb69789b386f4bc5204bbcf20f72c7793cadd1b06cf80c393c4106a",
+    "p310-q1-r1.xml": "434b754adafc2f1ba474d3ae78bbe05be9b5bc06de319d62a1537294d4ae45a4",
+    "p310-q1-r2.xml": "270ce33833cb683f7ce70a8326fd1666db0cf228b1dae74312446efb253d4011",
+    "p310-q1-r3.xml": "bead2893e824d48d6dac28ca1a71721491b001faafd768f4a7938afae518a19a",
+    "p310-q8-r1.xml": "a781397d62b38096274c8048f8466b19daf78754ccad28b6549003eaa1d2574d",
+    "p310-q8-r2.xml": "0cc42d7df9ce4051f036a0f4d29c7ea103f071df11df5167549a55fb1ae0679f"
+  },
+  "storage": {
+    "tool": "Microsoft DiskSpd 2.2.0",
+    "command_provenance": {
+      "status": "parameter-equivalent template reconstructed from each raw XML Profile; original shell command text, argument ordering, executable path, output redirection, and target path were not retained and are not asserted",
+      "template": "DiskSpd.exe -b<BLOCK_MiB>M -d12 -W3 -C1 -o<QUEUE_DEPTH> -t1 -r<BLOCK_MiB>M -w0 -L -Su -Rxml <TARGET_SHARD>",
+      "effective_parameters_from_xml": {
+        "duration_seconds": 12,
+        "warmup_seconds": 3,
+        "cooldown_seconds": 1,
+        "threads_per_file": 1,
+        "request_count_equals_queue_depth": true,
+        "write_ratio_percent": 0,
+        "measure_latency": true,
+        "disable_os_cache": true,
+        "random_alignment_equals_block_size": true,
+        "result_format": "xml"
+      }
+    },
+    "run_columns": [
+      "repetition",
+      "throughput_gbps",
+      "average_latency_ms",
+      "p50_latency_ms",
+      "p95_latency_ms",
+      "p99_latency_ms",
+      "read_count",
+      "raw_file"
+    ],
+    "series": [
+      {
+        "device": "p2",
+        "block_mib": 1,
+        "queue_depth": 1,
+        "runs": [
+          [1, 1.0474237186813187, 1, 0.923, 1.658, 2.1, 9999, "p2-b1m-q1-r1.xml"],
+          [2, 1.0098174465534466, 1.038, 0.958, 1.734, 2.242, 9640, "p2-b1m-q1-r2.xml"]
+        ]
+      },
+      {
+        "device": "p2",
+        "block_mib": 4,
+        "queue_depth": 1,
+        "runs": [
+          [1, 1.4965276672, 2.802, 2.521, 5.206, 6.19, 3568, "p2-b4m-q1-r1.xml"],
+          [2, 1.5296626688, 2.741, 2.44, 5.237, 6.217, 3647, "p2-b4m-q1-r2.xml"]
+        ]
+      },
+      {
+        "device": "p2",
+        "block_mib": 12,
+        "queue_depth": 1,
+        "runs": [
+          [1, 1.7213758880932557, 7.308, 6.51, 14.035, 16.899, 1643, "p2-q1-r1.xml"],
+          [2, 1.721761792, 7.308, 6.502, 13.891, 17.045, 1642, "p2-q1-r2.xml"],
+          [3, 1.673527296, 7.52, 6.799, 14.117, 17.329, 1596, "p2-q1-r3.xml"]
+        ]
+      },
+      {
+        "device": "p2",
+        "block_mib": 12,
+        "queue_depth": 8,
+        "runs": [
+          [1, 1.952448512, 51.579, 49.896, 61.871, 67.845, 1862, "p2-q8-r1.xml"],
+          [2, 1.953497088, 51.545, 50.042, 61.732, 67.348, 1863, "p2-q8-r2.xml"]
+        ]
+      },
+      {
+        "device": "p310",
+        "block_mib": 1,
+        "queue_depth": 1,
+        "runs": [
+          [1, 2.0610122677322678, 0.508, 0.433, 0.941, 1.045, 19675, "p310-b1m-q1-r1.xml"],
+          [2, 2.1899630225774227, 0.478, 0.4, 0.902, 1.034, 20906, "p310-b1m-q1-r2.xml"]
+        ]
+      },
+      {
+        "device": "p310",
+        "block_mib": 4,
+        "queue_depth": 1,
+        "runs": [
+          [1, 4.336490905600001, 0.967, 0.876, 1.263, 1.436, 10339, "p310-b4m-q1-r1.xml"],
+          [2, 4.346137804800001, 0.965, 0.893, 1.251, 1.39, 10362, "p310-b4m-q1-r2.xml"]
+        ]
+      },
+      {
+        "device": "p310",
+        "block_mib": 12,
+        "queue_depth": 1,
+        "runs": [
+          [1, 5.260705792, 2.391, 2.442, 2.648, 2.929, 5017, "p310-q1-r1.xml"],
+          [2, 5.298233637302248, 2.374, 2.366, 2.702, 2.911, 5057, "p310-q1-r2.xml"],
+          [3, 5.222957056, 2.408, 2.383, 2.733, 3.086, 4981, "p310-q1-r3.xml"]
+        ]
+      },
+      {
+        "device": "p310",
+        "block_mib": 12,
+        "queue_depth": 8,
+        "runs": [
+          [1, 7.021264896, 14.336, 14.119, 15.815, 17.819, 6696, "p310-q8-r1.xml"],
+          [2, 7.164919808, 13.912, 13.999, 14.559, 15.298, 6833, "p310-q8-r2.xml"]
+        ]
+      }
+    ],
+    "derivation": {
+      "reported_medians": "For each device at block_mib=12 and the selected queue depth, apply the standard median independently to each metric column.",
+      "fit_points": "For each device and block_mib in [1, 4, 12] at queue_depth=1, y is median(average_latency_ms)/1000 seconds and x is block_mib*1048576/1000000000 decimal GB.",
+      "fit": "Ordinary least squares y = intercept + slope*x; bandwidth_gbps = 1/slope; latency_us = intercept*1000000; r_squared = 1 - sum((y-y_hat)^2)/sum((y-mean(y))^2)."
+    }
+  },
+  "ram_to_vram": {
+    "tool": "python -m moevm.cuda_transfer_benchmark",
+    "command_provenance": {
+      "status": "parameter-equivalent templates reconstructed from raw JSON parameters and the benchmark CLI; original shell text, Python executable path, argument ordering, and output paths were not retained and are not asserted",
+      "templates": [
+        {
+          "block_mib": 1,
+          "command": "python -m moevm.cuda_transfer_benchmark --chunk-size 1MiB --operations 4096 --warmup 128 --mode both --async-depth 8 --device 0 --output <UNIQUE_OUTPUT_JSON>"
+        },
+        {
+          "block_mib": 4,
+          "command": "python -m moevm.cuda_transfer_benchmark --chunk-size 4MiB --operations 4096 --warmup 128 --mode both --async-depth 8 --device 0 --output <UNIQUE_OUTPUT_JSON>"
+        },
+        {
+          "block_mib": 12,
+          "command": "python -m moevm.cuda_transfer_benchmark --chunk-size 12MiB --operations 2048 --warmup 64 --mode both --async-depth 8 --device 0 --output <UNIQUE_OUTPUT_JSON>"
+        }
+      ]
+    },
+    "run_columns": [
+      "repetition",
+      "wall_throughput_gbps",
+      "cuda_event_mean_ms",
+      "cuda_event_p50_ms",
+      "cuda_event_p95_ms",
+      "cuda_event_p99_ms",
+      "raw_file"
+    ],
+    "series": [
+      {
+        "case": "pageable-sync",
+        "block_mib": 1,
+        "runs": [
+          [1, 6.971157845907186, 0.13952658586822508, 0.13814400136470795, 0.15161599963903427, 0.1796176031231885, "cuda-transfer-1m-r1.json"],
+          [2, 7.061556684755569, 0.13838198431039928, 0.1372160017490387, 0.14927999675273895, 0.1751584067940714, "cuda-transfer-1m-r2.json"],
+          [3, 6.954205352528273, 0.13992385941310204, 0.1379839926958084, 0.15618399903178215, 0.18648479729890832, "cuda-transfer-1m-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-sync",
+        "block_mib": 1,
+        "runs": [
+          [1, 9.249350378397143, 0.10244392957247328, 0.09987200051546097, 0.1199679970741272, 0.12969759702682496, "cuda-transfer-1m-r1.json"],
+          [2, 9.279974970885073, 0.10205326544928539, 0.09904000163078308, 0.12026399932801723, 0.13562560454010966, "cuda-transfer-1m-r2.json"],
+          [3, 9.296367410821833, 0.10255499990853423, 0.09932799637317657, 0.12042400054633617, 0.1349663995206358, "cuda-transfer-1m-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-async",
+        "block_mib": 1,
+        "runs": [
+          [1, 11.91243061476376, 0.08282724304626754, 0.08169600367546082, 0.08762399666011333, 0.1066880002617836, "cuda-transfer-1m-r1.json"],
+          [2, 12.124606606450623, 0.08249372674981714, 0.081727996468544, 0.08424000069499016, 0.10527999699115753, "cuda-transfer-1m-r2.json"],
+          [3, 12.074941384780002, 0.08254126611973334, 0.081727996468544, 0.08448000252246857, 0.10595200210809708, "cuda-transfer-1m-r3.json"]
+        ]
+      },
+      {
+        "case": "pageable-sync",
+        "block_mib": 4,
+        "runs": [
+          [1, 10.572700196494946, 0.3858077733384562, 0.3834879994392395, 0.4030800014734268, 0.43278718739748007, "cuda-transfer-4m-r1.json"],
+          [2, 10.75563223095611, 0.3789716012906865, 0.37811198830604553, 0.38765600323677063, 0.4132143884897233, "cuda-transfer-4m-r2.json"],
+          [3, 10.624268452942607, 0.3817644922164618, 0.379040002822876, 0.3991920128464699, 0.4369984045624736, "cuda-transfer-4m-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-sync",
+        "block_mib": 4,
+        "runs": [
+          [1, 11.797540835390365, 0.3436316484512645, 0.338591992855072, 0.36849600076675415, 0.3863071918487549, "cuda-transfer-4m-r1.json"],
+          [2, 11.621775031975346, 0.34805178098758915, 0.34140801429748535, 0.38038399815559387, 0.4320943966507913, "cuda-transfer-4m-r2.json"],
+          [3, 11.692110483526896, 0.3457337578147417, 0.3412960022687912, 0.3733440041542053, 0.39442719370126744, "cuda-transfer-4m-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-async",
+        "block_mib": 4,
+        "runs": [
+          [1, 12.794599523751291, 0.3191995715533267, 0.3169279992580414, 0.3375200033187866, 0.3470720052719116, "cuda-transfer-4m-r1.json"],
+          [2, 12.801274044950995, 0.3187826246939949, 0.3164159953594208, 0.33510401099920273, 0.34846560806036003, "cuda-transfer-4m-r2.json"],
+          [3, 12.769148598270535, 0.31958088447572663, 0.3169279992580414, 0.34144799411296844, 0.34895360469818126, "cuda-transfer-4m-r3.json"]
+        ]
+      },
+      {
+        "case": "pageable-sync",
+        "block_mib": 12,
+        "runs": [
+          [1, 11.515324983757996, 1.0772174997255206, 1.0697759985923767, 1.1426096379756927, 1.181332801580429, "cuda-transfer-12m-long-r1.json"],
+          [2, 11.827279907308668, 1.050832812616136, 1.0395840406417847, 1.1097408056259153, 1.1774393332004547, "cuda-transfer-12m-long-r2.json"],
+          [3, 11.816783966909453, 1.0517834998317994, 1.0394079685211182, 1.1093647718429565, 1.1488076972961425, "cuda-transfer-12m-long-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-sync",
+        "block_mib": 12,
+        "runs": [
+          [1, 12.486226054741643, 0.9932444213773124, 0.9954079985618591, 1.021563220024109, 1.0526752114295959, "cuda-transfer-12m-long-r1.json"],
+          [2, 12.539749667319418, 0.9889911254867911, 0.9913119971752167, 1.0166559934616088, 1.0476841461658477, "cuda-transfer-12m-long-r2.json"],
+          [3, 12.525620131551607, 0.9901312809670344, 0.9900799989700317, 1.0243071854114532, 1.0587391901016234, "cuda-transfer-12m-long-r3.json"]
+        ]
+      },
+      {
+        "case": "pinned-async",
+        "block_mib": 12,
+        "runs": [
+          [1, 12.971649796010823, 0.9518527191539761, 0.9446079730987549, 0.9971727758646012, 1.0102442038059234, "cuda-transfer-12m-long-r1.json"],
+          [2, 13.003560023391447, 0.9503788748988882, 0.943120002746582, 0.9942544102668761, 1.0098579657077789, "cuda-transfer-12m-long-r2.json"],
+          [3, 13.089409513294765, 0.9484705156937707, 0.9428799748420715, 0.9792672038078307, 1.0067785453796387, "cuda-transfer-12m-long-r3.json"]
+        ]
+      }
+    ],
+    "derivation": {
+      "reported_medians": "At block_mib=12, apply the standard median independently to wall throughput and each CUDA-event metric for each case.",
+      "fit_points": "For each case and block_mib in [1, 4, 12], y is median(cuda_event_mean_ms)/1000 seconds and x is block_mib*1048576/1000000000 decimal GB.",
+      "fit": "Use the same ordinary-least-squares formula documented for storage."
+    }
+  }
+}

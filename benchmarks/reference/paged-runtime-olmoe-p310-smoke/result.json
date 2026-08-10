@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "evidence_label": "single-workload controlled real OLMoE paged-runtime smoke",
+  "measured_at": "2026-08-10",
+  "implementation_commit": "d43794efad98d8a9ada3515a6c41cfa4bf558bfd",
+  "model": {
+    "id": "allenai/OLMoE-1B-7B-0924",
+    "revision": "bd1c52f59153f724c1ad11ca1791edc77bab3806",
+    "dtype": "bfloat16",
+    "layers": 16,
+    "experts_per_layer": 64,
+    "top_k": 8,
+    "expert_bytes": 12582912,
+    "checkpoint_shards_sha256": {
+      "model-00001-of-00003.safetensors": "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e",
+      "model-00002-of-00003.safetensors": "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7",
+      "model-00003-of-00003.safetensors": "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
+    }
+  },
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 3080 Ti",
+    "python": "3.12.8",
+    "cuda_runtime": "13.0",
+    "torch": "2.12.1+cu130",
+    "transformers": "5.14.1",
+    "accelerate": "1.14.0",
+    "safetensors": "0.8.0"
+  },
+  "workload": {
+    "id": "python_code",
+    "prompt_sha256": "458b7f62a19be4225c0c63de7408dec36fe112316d0e87a4e246416343be5d48",
+    "workload_file_sha256": "2cc5bb1f44ecca9fccbe22869080edbdec215f55130528f7dcfb6f4e265eec44",
+    "input_tokens": 21,
+    "generated_tokens": 2,
+    "generation_equivalent_decode_tokens": 1,
+    "decoding": "greedy",
+    "temperature": 0.0,
+    "seed": 17
+  },
+  "runtime_policy": {
+    "name": "lru",
+    "slots_per_layer": 32,
+    "expert_cache_bytes": 6442450944,
+    "non_expert_checkpoint_bytes": 953421824,
+    "expected_weight_vram_bytes": 7395872768,
+    "required_free_vram_bytes": 8738050048,
+    "safety_margin_bytes": 1342177280,
+    "staging_slots": 1,
+    "staging_host_bytes": 12582912,
+    "execution": "synchronous Python; no storage, H2D, or compute overlap"
+  },
+  "correctness": {
+    "baseline_generated_token_ids": [
+      187,
+      187
+    ],
+    "paged_cold_generated_token_ids": [
+      187,
+      187
+    ],
+    "paged_retained_generated_token_ids": [
+      187,
+      187
+    ],
+    "all_match": true
+  },
+  "measurements": {
+    "accelerate_cpu_offload_baseline": {
+      "evidence_boundary": "Transformers with Accelerate CPU offload and router-capture hooks; not a production baseline",
+      "model_load_seconds": 5.054969600001641,
+      "prefill_seconds": 1.7458659000003536,
+      "generation_equivalent_decode_seconds": 0.6684255999989546,
+      "generation_equivalent_decode_tokens_per_second": 1.4960528142572098,
+      "generation_wall_seconds": 2.414291499999308,
+      "end_to_end_generated_tokens_per_second_including_prefill": 0.8284003816442932,
+      "peak_vram_bytes": 9417185792
+    },
+    "paged_lru32_cold_expert_cache": {
+      "cache_state": "empty dynamic expert cache after required static preload; OS page cache uncontrolled",
+      "model_load_seconds": 0.896238599998469,
+      "prefill_seconds": 3.3746854000000894,
+      "generation_equivalent_decode_seconds": 0.18651190000127826,
+      "generation_equivalent_decode_tokens_per_second": 5.361588188170012,
+      "generation_wall_seconds": 3.5678332000006776,
+      "end_to_end_generated_tokens_per_second_including_prefill": 0.5605643223454561,
+      "peak_vram_allocated_bytes": 7407888896,
+      "peak_vram_reserved_bytes": 7558135808,
+      "total_requests": 899,
+      "total_hits": 78,
+      "total_misses": 821,
+      "total_evictions": 309,
+      "total_hit_rate": 0.0867630700778643,
+      "logical_storage_bytes": 10330570752,
+      "logical_host_to_device_bytes": 10330570752,
+      "storage_seconds": 2.0216178000209766,
+      "host_to_device_seconds": 0.8333481000281608,
+      "expert_forward_seconds": 3.2977754000003188,
+      "decode_requests": 128,
+      "decode_hits": 78,
+      "decode_misses": 50,
+      "decode_hit_rate": 0.609375,
+      "decode_logical_storage_bytes": 629145600
+    },
+    "paged_lru32_retained_expert_cache": {
+      "cache_state": "repeat pass retaining expert-cache state from the first pass; OS page cache uncontrolled",
+      "model_reloaded": false,
+      "shared_initial_model_load_seconds": 0.896238599998469,
+      "prefill_seconds": 1.6016634999996313,
+      "generation_equivalent_decode_seconds": 0.15792600000168022,
+      "generation_equivalent_decode_tokens_per_second": 6.332079581508812,
+      "generation_wall_seconds": 1.759893299999021,
+      "end_to_end_generated_tokens_per_second_including_prefill": 1.1364325325865565,
+      "peak_vram_allocated_bytes": 7407888896,
+      "peak_vram_reserved_bytes": 7558135808,
+      "total_requests": 899,
+      "total_hits": 144,
+      "total_misses": 755,
+      "total_evictions": 755,
+      "total_hit_rate": 0.16017797552836485,
+      "logical_storage_bytes": 9500098560,
+      "logical_host_to_device_bytes": 9500098560,
+      "storage_seconds": 0.6311326999766607,
+      "host_to_device_seconds": 0.7622688000155904,
+      "expert_forward_seconds": 1.7222855999989406,
+      "decode_requests": 128,
+      "decode_hits": 78,
+      "decode_misses": 50,
+      "decode_hit_rate": 0.609375,
+      "decode_logical_storage_bytes": 629145600
+    }
+  },
+  "comparisons_to_baseline": {
+    "paged_model_load_speedup": 5.640205186442847,
+    "peak_vram_reduction_fraction": 0.21336489906644076,
+    "cold": {
+      "prefill_speedup": 0.517341823922404,
+      "decode_throughput_speedup": 3.583822801624848,
+      "end_to_end_speedup": 0.6766828393207535,
+      "end_to_end_throughput_change_fraction": -0.32331716067924654
+    },
+    "retained": {
+      "prefill_speedup": 1.0900328939260684,
+      "decode_throughput_speedup": 4.232524093511157,
+      "end_to_end_speedup": 1.371839701873205,
+      "end_to_end_throughput_change_fraction": 0.3718397018732051
+    },
+    "retained_over_cold": {
+      "end_to_end_speedup": 2.027300859661584,
+      "logical_storage_traffic_ratio": 0.9196102314250914,
+      "logical_storage_traffic_reduction_fraction": 0.0803897685749086
+    }
+  },
+  "raw_artifacts_sha256": {
+    "results/real-runtime-baseline-p310-t2-r2/seed-17/manifest.json": "7e8068a5478ef019c0dd4a2a9cfeda71e705a694fcdcf6e34f1ef24131355860",
+    "results/real-runtime-baseline-p310-t2-r2/seed-17/python_code.metadata.json": "aa2e55c9f47a5a0d9405f984df6c181043cb84813c1619ddc8f0b22b92d7749f",
+    "results/real-runtime-baseline-p310-t2-r2/seed-17/python_code.trace.jsonl": "2c1a72150e6ca0e0b0a1f899441d30260981552e63e336630fa80967a22700a2",
+    "results/paged-runtime-p310/lru32-python-code-r2.json": "3d6e508c7727720a216b279634b5de6d58d98f5fe4d33ca040c3300b3d976c51"
+  },
+  "limitations": [
+    "This is one prompt with two generated tokens and only one generation-equivalent decode interval.",
+    "The baseline is an Accelerate CPU-offload routing capture, not a tuned production serving engine.",
+    "Cold expert cache does not mean cold NVMe: OS and device cache state was not controlled.",
+    "Logical storage bytes are requested tensor bytes, not measured physical NVMe traffic.",
+    "The retained pass intentionally benefits from expert and OS cache reuse.",
+    "Prefill groups unique active experts per layer, so its request count and hit rate are not directly comparable to tokenwise placement replay.",
+    "The current runtime is synchronous Python and does not overlap storage reads, H2D copies, or compute.",
+    "This result establishes feasibility and a capacity/performance signal, not a general speedup claim."
+  ]
+}

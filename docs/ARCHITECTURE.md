@@ -52,7 +52,10 @@ An inclusive byte-capacity LRU cache. Evicting an expert from RAM invalidates it
 
 ### NVMe backing store
 
-The backing store is assumed to contain every expert. It has configured sequential-equivalent bandwidth and per-batch latency. This abstraction is deliberately optimistic about file layout and I/O scheduling; real checkpoint replay must replace it.
+The backing store is assumed to contain every expert. It has configured
+sequential-equivalent bandwidth and a configurable fixed-latency scope. This
+abstraction is deliberately optimistic about file layout and I/O scheduling;
+real checkpoint replay must replace it.
 
 ## Predictor
 
@@ -82,8 +85,14 @@ For each routing step:
 Transfer time is modeled as:
 
 ```text
-bytes / bandwidth + one batch latency
+bytes / bandwidth + fixed latency charges
 ```
+
+`hardware.fixed_latency_scope` controls those charges. The backward-compatible
+`batch` scope adds one fixed latency for each non-empty path in a routing-step
+batch. The `per_expert` scope adds one fixed latency for every sequential expert
+transfer; calibrated profiles must use this scope when their fitted intercepts
+come from one-expert operations.
 
 NVMe→RAM and RAM→VRAM times are additive in the current simulator. A future
 pipeline model should represent concurrent engines, queue depth, cancellation

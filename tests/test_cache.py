@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from moevm.cache import ByteLRUCache, HierarchicalExpertCache
 from moevm.config import HardwareConfig
@@ -83,6 +84,76 @@ class HierarchicalCacheTests(unittest.TestCase):
 
         self.assertAlmostEqual(estimated, actual)
         self.assertEqual(cache.prefetch_many(()).transfer_ms, 0.0)
+
+    def test_per_expert_latency_counts_mixed_tier_transfers(self) -> None:
+        hardware = replace(
+            self.hardware,
+            vram_cache_mib=4.0,
+            fixed_latency_scope="per_expert",
+        )
+        expert_size = 1024 * 1024
+        cache = HierarchicalExpertCache(hardware, expert_size_bytes=expert_size)
+        storage_key = ExpertKey(0, 0)
+        ram_key = ExpertKey(0, 1)
+        cache.l2.put(ram_key, expert_size)
+
+        result = cache.access_many((storage_key, ram_key, storage_key))
+
+        self.assertEqual(result.ram_to_vram_transfers, 2)
+        self.assertEqual(result.nvme_to_ram_transfers, 1)
+        expected_ms = (
+            (2 * expert_size / (hardware.ram_to_vram_gbps * 1_000_000_000)) * 1000.0
+            + 2 * hardware.ram_latency_us / 1000.0
+            + (expert_size / (hardware.nvme_to_ram_gbps * 1_000_000_000)) * 1000.0
+            + hardware.nvme_latency_us / 1000.0
+        )
+        self.assertAlmostEqual(result.transfer_ms, expected_ms)
+
+    def test_latency_scope_changes_deadline_admission(self) -> None:
+        hardware = HardwareConfig(
+            vram_cache_mib=4.0,
+            ram_cache_mib=4.0,
+            ram_to_vram_gbps=1000.0,
+            nvme_to_ram_gbps=1000.0,
+            ram_latency_us=600.0,
+            nvme_latency_us=0.0,
+            overlap_efficiency=1.0,
+            prefetch_vram_fraction=0.5,
+            fixed_latency_scope="per_expert",
+        )
+        expert_size = 1024 * 1024
+        first = ExpertKey(0, 0)
+        second = ExpertKey(0, 1)
+
+        per_expert = HierarchicalExpertCache(
+            hardware,
+            expert_size_bytes=expert_size,
+            prefetch_enabled=True,
+        )
+        per_expert.l2.put(first, expert_size)
+        per_expert.l2.put(second, expert_size)
+        admitted, rejected = per_expert.admit_prefetch_within_budget(
+            (first, second),
+            budget_ms=0.9,
+        )
+
+        self.assertEqual(admitted, (first,))
+        self.assertEqual(rejected, 1)
+
+        batch = HierarchicalExpertCache(
+            replace(hardware, fixed_latency_scope="batch"),
+            expert_size_bytes=expert_size,
+            prefetch_enabled=True,
+        )
+        batch.l2.put(first, expert_size)
+        batch.l2.put(second, expert_size)
+        admitted, rejected = batch.admit_prefetch_within_budget(
+            (first, second),
+            budget_ms=0.9,
+        )
+
+        self.assertEqual(admitted, (first, second))
+        self.assertEqual(rejected, 0)
 
     def test_speculative_l2_admission_preserves_demand_vram(self) -> None:
         hardware = HardwareConfig(

@@ -6,9 +6,10 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 _MIB = 1024 * 1024
+FixedLatencyScope = Literal["batch", "per_expert"]
 
 
 def _require_string(name: str, value: object) -> str:
@@ -80,6 +81,7 @@ class HardwareConfig:
     nvme_latency_us: float
     overlap_efficiency: float
     prefetch_vram_fraction: float
+    fixed_latency_scope: FixedLatencyScope = "batch"
 
     @property
     def vram_cache_bytes(self) -> int:
@@ -114,6 +116,13 @@ class HardwareConfig:
         )
         if ram_latency_us < 0 or nvme_latency_us < 0:
             raise ValueError("latency values cannot be negative")
+        fixed_latency_scope = _require_string(
+            "hardware.fixed_latency_scope", self.fixed_latency_scope
+        )
+        if fixed_latency_scope not in ("batch", "per_expert"):
+            raise ValueError(
+                "hardware.fixed_latency_scope must be 'batch' or 'per_expert'"
+            )
         overlap_efficiency = _require_finite_number(
             "hardware.overlap_efficiency", self.overlap_efficiency
         )

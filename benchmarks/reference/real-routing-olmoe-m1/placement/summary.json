@@ -1,0 +1,395 @@
+{
+  "evidence_label": "offline OLMoE placement trace replay reference",
+  "full_report_serialization": {
+    "allow_nan": false,
+    "encoding": "UTF-8",
+    "final_newline": false,
+    "indent": 2,
+    "newline": "LF",
+    "sort_keys": true
+  },
+  "parameters": {
+    "capacity_per_layer": {
+      "0": 40,
+      "1": 40,
+      "10": 40,
+      "11": 40,
+      "12": 40,
+      "13": 40,
+      "14": 40,
+      "15": 40,
+      "2": 40,
+      "3": 40,
+      "4": 40,
+      "5": 40,
+      "6": 40,
+      "7": 40,
+      "8": 40,
+      "9": 40
+    },
+    "expert_bytes": 12582912,
+    "hybrid_dynamic_lru_per_layer": {
+      "0": 8,
+      "1": 8,
+      "10": 8,
+      "11": 8,
+      "12": 8,
+      "13": 8,
+      "14": 8,
+      "15": 8,
+      "2": 8,
+      "3": 8,
+      "4": 8,
+      "5": 8,
+      "6": 8,
+      "7": 8,
+      "8": 8,
+      "9": 8
+    },
+    "hybrid_protected_hot_per_layer": 32,
+    "hyperparameters_selected_by_nested_validation": false,
+    "intra_step_access_order": "expert_id_ascending",
+    "policies": [
+      "cold_lru",
+      "static_hot",
+      "hybrid_hot_lru"
+    ],
+    "prefill_or_request_batching_modeled": false,
+    "static_miss_scratch_counted_in_capacity": false,
+    "top_k": 8
+  },
+  "reports": {
+    "cross_seed_same_workload": {
+      "aggregate": {
+        "cold_lru": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 74604085248,
+          "demand_bytes_per_token": 340657923.5068493,
+          "evictions": 2729,
+          "hit_rate": 0.7884917237442922,
+          "hits": 22103,
+          "misses": 5929,
+          "preload_bytes": 0,
+          "tokens": 219,
+          "total_bytes_loaded": 74604085248,
+          "total_bytes_per_token": 340657923.5068493
+        },
+        "hybrid_hot_lru": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 42945478656,
+          "demand_bytes_per_token": 196098076.05479452,
+          "evictions": 2773,
+          "hit_rate": 0.8782462899543378,
+          "hits": 24619,
+          "misses": 3413,
+          "preload_bytes": 32212254720,
+          "tokens": 219,
+          "total_bytes_loaded": 75157733376,
+          "total_bytes_per_token": 343185997.15068495
+        },
+        "static_hot": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 40391147520,
+          "demand_bytes_per_token": 184434463.56164384,
+          "evictions": 0,
+          "hit_rate": 0.8854880136986302,
+          "hits": 24822,
+          "misses": 3210,
+          "preload_bytes": 40265318400,
+          "tokens": 219,
+          "total_bytes_loaded": 80656465920,
+          "total_bytes_per_token": 368294364.9315069
+        }
+      },
+      "evidence_role": "secondary",
+      "full_report": "results/placement/seed17-to-seed29-cap40.json",
+      "full_report_sha256": "f09d3a6816b953a895d2e8335e5af233c3095c37390ada052b27ff1ef9657210",
+      "independence": "non-independent: seeds differ but workload IDs, prompts, and all step addresses are shared",
+      "placement_sha256": {
+        "cold_lru": "c65700e7a974ea7b362b9b7a0940e24fe2af789c1cc6025aaaf5bb4ea731e8bb",
+        "hybrid_hot_lru": "77b9750a4558d97393ff8ef8ae7c277b83ad2685debb11902770225ded650464",
+        "static_hot": "282fcd3d7e825187e41a59fc59098b29a9b645981e423c1e31e56ab2d94b9756"
+      },
+      "protocol": "train-test",
+      "result_status": "exploratory",
+      "split_audit": {
+        "shared_same_address_exact_expert_set_matches": 2384,
+        "shared_same_address_fraction_of_test": 1.0,
+        "shared_same_address_steps": 3504,
+        "shared_workload_ids": [
+          "domain_switch",
+          "math_reasoning",
+          "python_code",
+          "systems_en",
+          "systems_it"
+        ],
+        "test_unique_step_addresses": 3504,
+        "test_workload_ids": [
+          "domain_switch",
+          "math_reasoning",
+          "python_code",
+          "systems_en",
+          "systems_it"
+        ],
+        "train_unique_step_addresses": 3504,
+        "train_workload_ids": [
+          "domain_switch",
+          "math_reasoning",
+          "python_code",
+          "systems_en",
+          "systems_it"
+        ],
+        "workload_holdout": false
+      }
+    },
+    "leave_one_workload_out": {
+      "aggregate": {
+        "cold_lru": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 74604085248,
+          "demand_bytes_per_token": 340657923.5068493,
+          "evictions": 2729,
+          "hit_rate": 0.7884917237442922,
+          "hits": 22103,
+          "misses": 5929,
+          "preload_bytes": 0,
+          "tokens": 219,
+          "total_bytes_loaded": 74604085248,
+          "total_bytes_per_token": 340657923.5068493
+        },
+        "hybrid_hot_lru": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 47588573184,
+          "demand_bytes_per_token": 217299420.93150684,
+          "evictions": 3142,
+          "hit_rate": 0.8650827625570776,
+          "hits": 24250,
+          "misses": 3782,
+          "preload_bytes": 32212254720,
+          "tokens": 219,
+          "total_bytes_loaded": 79800827904,
+          "total_bytes_per_token": 364387342.0273973
+        },
+        "static_hot": {
+          "accesses": 28032,
+          "demand_bytes_loaded": 53603205120,
+          "demand_bytes_per_token": 244763493.69863012,
+          "evictions": 0,
+          "hit_rate": 0.8480308219178082,
+          "hits": 23772,
+          "misses": 4260,
+          "preload_bytes": 40265318400,
+          "tokens": 219,
+          "total_bytes_loaded": 93868523520,
+          "total_bytes_per_token": 428623395.0684931
+        }
+      },
+      "evidence_role": "primary",
+      "fold_split_audits": [
+        {
+          "held_out_workload": "domain_switch",
+          "split_audit": {
+            "shared_same_address_exact_expert_set_matches": 0,
+            "shared_same_address_fraction_of_test": 0.0,
+            "shared_same_address_steps": 0,
+            "shared_workload_ids": [],
+            "test_unique_step_addresses": 704,
+            "test_workload_ids": [
+              "domain_switch"
+            ],
+            "train_unique_step_addresses": 2800,
+            "train_workload_ids": [
+              "math_reasoning",
+              "python_code",
+              "systems_en",
+              "systems_it"
+            ],
+            "workload_holdout": true
+          }
+        },
+        {
+          "held_out_workload": "math_reasoning",
+          "split_audit": {
+            "shared_same_address_exact_expert_set_matches": 0,
+            "shared_same_address_fraction_of_test": 0.0,
+            "shared_same_address_steps": 0,
+            "shared_workload_ids": [],
+            "test_unique_step_addresses": 704,
+            "test_workload_ids": [
+              "math_reasoning"
+            ],
+            "train_unique_step_addresses": 2800,
+            "train_workload_ids": [
+              "domain_switch",
+              "python_code",
+              "systems_en",
+              "systems_it"
+            ],
+            "workload_holdout": true
+          }
+        },
+        {
+          "held_out_workload": "python_code",
+          "split_audit": {
+            "shared_same_address_exact_expert_set_matches": 0,
+            "shared_same_address_fraction_of_test": 0.0,
+            "shared_same_address_steps": 0,
+            "shared_workload_ids": [],
+            "test_unique_step_addresses": 592,
+            "test_workload_ids": [
+              "python_code"
+            ],
+            "train_unique_step_addresses": 2912,
+            "train_workload_ids": [
+              "domain_switch",
+              "math_reasoning",
+              "systems_en",
+              "systems_it"
+            ],
+            "workload_holdout": true
+          }
+        },
+        {
+          "held_out_workload": "systems_en",
+          "split_audit": {
+            "shared_same_address_exact_expert_set_matches": 0,
+            "shared_same_address_fraction_of_test": 0.0,
+            "shared_same_address_steps": 0,
+            "shared_workload_ids": [],
+            "test_unique_step_addresses": 640,
+            "test_workload_ids": [
+              "systems_en"
+            ],
+            "train_unique_step_addresses": 2864,
+            "train_workload_ids": [
+              "domain_switch",
+              "math_reasoning",
+              "python_code",
+              "systems_it"
+            ],
+            "workload_holdout": true
+          }
+        },
+        {
+          "held_out_workload": "systems_it",
+          "split_audit": {
+            "shared_same_address_exact_expert_set_matches": 0,
+            "shared_same_address_fraction_of_test": 0.0,
+            "shared_same_address_steps": 0,
+            "shared_workload_ids": [],
+            "test_unique_step_addresses": 864,
+            "test_workload_ids": [
+              "systems_it"
+            ],
+            "train_unique_step_addresses": 2640,
+            "train_workload_ids": [
+              "domain_switch",
+              "math_reasoning",
+              "python_code",
+              "systems_en"
+            ],
+            "workload_holdout": true
+          }
+        }
+      ],
+      "full_report": "results/placement/leave-one-workload-out-cap40.json",
+      "full_report_sha256": "a84955c5cb920fae74336553c81fc5fc86959ada0b614ff44cc6cb1dc4c591f8",
+      "independence": "strict workload holdout by fold",
+      "protocol": "leave-one-workload-out",
+      "result_status": "exploratory: capacity split was not selected by nested validation",
+      "split_audit": {
+        "folds": 5,
+        "folds_with_shared_same_address_steps": 0,
+        "folds_with_shared_workloads": 0,
+        "strict_workload_holdout_by_fold": true
+      }
+    }
+  },
+  "schema_version": 1,
+  "trace_manifest": {
+    "seed_17_training": [
+      {
+        "expert_accesses": 5632,
+        "routing_steps": 704,
+        "sha256": "24fb1a443779beb03bd110bca9e59408de42614bb754f5ffb0a167007e7d5700",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/domain_switch.trace.jsonl",
+        "tokens": 44,
+        "workload_id": "domain_switch"
+      },
+      {
+        "expert_accesses": 5632,
+        "routing_steps": 704,
+        "sha256": "f189d13e39c1729e72202ad1135632d2b34a9657c3638b7e286c46fa177fe484",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/math_reasoning.trace.jsonl",
+        "tokens": 44,
+        "workload_id": "math_reasoning"
+      },
+      {
+        "expert_accesses": 4736,
+        "routing_steps": 592,
+        "sha256": "da14e0844780c0dec9d37ddac79c609b0ac2120d4e3e227442458ef5f6037d05",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/python_code.trace.jsonl",
+        "tokens": 37,
+        "workload_id": "python_code"
+      },
+      {
+        "expert_accesses": 5120,
+        "routing_steps": 640,
+        "sha256": "a69d81913d9260f05140c5dd27cc9d3dffeaeb00aed867b7029893d70955af94",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/systems_en.trace.jsonl",
+        "tokens": 40,
+        "workload_id": "systems_en"
+      },
+      {
+        "expert_accesses": 6912,
+        "routing_steps": 864,
+        "sha256": "ef1651a5a3090c16b1d82504dac3b7b7ab2e3287acac880fd7400ed60383d738",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-17/systems_it.trace.jsonl",
+        "tokens": 54,
+        "workload_id": "systems_it"
+      }
+    ],
+    "seed_29_test": [
+      {
+        "expert_accesses": 5632,
+        "routing_steps": 704,
+        "sha256": "4e1381279e6943443bb98c5ff720f950d4a8e31fe8c3723019bf3e3da803d95f",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-29/domain_switch.trace.jsonl",
+        "tokens": 44,
+        "workload_id": "domain_switch"
+      },
+      {
+        "expert_accesses": 5632,
+        "routing_steps": 704,
+        "sha256": "a77c8af20e83d471a6ddd34577b99d83c4e649ed49717916f8ca85f5efba97a3",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-29/math_reasoning.trace.jsonl",
+        "tokens": 44,
+        "workload_id": "math_reasoning"
+      },
+      {
+        "expert_accesses": 4736,
+        "routing_steps": 592,
+        "sha256": "e100bd48501f75b4428f3d1f83c77a56a7414654707304dce1aa4577564adbd9",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-29/python_code.trace.jsonl",
+        "tokens": 37,
+        "workload_id": "python_code"
+      },
+      {
+        "expert_accesses": 5120,
+        "routing_steps": 640,
+        "sha256": "a8f579f3f78ae690e3b6037e8ba1bab640c508fbba953ab9fad56e2f9b8a3ae9",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-29/systems_en.trace.jsonl",
+        "tokens": 40,
+        "workload_id": "systems_en"
+      },
+      {
+        "expert_accesses": 6912,
+        "routing_steps": 864,
+        "sha256": "a7be74e7ff0615195db480ece5bf4104a8195a463881233cc931336d47ef5e5e",
+        "source": "benchmarks/reference/real-routing-olmoe-m1/traces/seed-29/systems_it.trace.jsonl",
+        "tokens": 54,
+        "workload_id": "systems_it"
+      }
+    ]
+  }
+}

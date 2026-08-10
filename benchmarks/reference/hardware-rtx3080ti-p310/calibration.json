@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "evidence_label": "local hardware microbenchmark",
+  "measured_at": "2026-08-10",
+  "repository_base_commit_at_measurement": "15dfc313f8995e7fdaee8023d52dad18c59f2f92",
+  "benchmark_implementation_commit": "ee6a4ec8817449779d8dfb08bb560d0cd1be2661",
+  "measurement_worktree_state": "The benchmark implementation was uncommitted during measurement and was subsequently committed at benchmark_implementation_commit; measurement-evidence.json anchors the exact raw outputs.",
+  "host": {
+    "gpu": "NVIDIA GeForce RTX 3080 Ti",
+    "gpu_memory_mib": 12288,
+    "gpu_driver": "610.47",
+    "gpu_link_under_load": "PCIe 4.0 x8",
+    "ram_gib": 31.1,
+    "power_plan": "custom low-latency plan"
+  },
+  "storage": {
+    "copy_verification": {
+      "source": "CT500P2SSD8",
+      "destination": "CT1000P310SSD8",
+      "files": 243,
+      "gib": 14.731,
+      "all_relative_paths_sizes_and_sha256_match": true,
+      "source_preserved": true,
+      "checkpoint_shards_sha256": {
+        "model-00001-of-00003.safetensors": "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e",
+        "model-00002-of-00003.safetensors": "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7",
+        "model-00003-of-00003.safetensors": "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
+      }
+    },
+    "tool": {
+      "name": "Microsoft DiskSpd",
+      "version": "2.2.0",
+      "source": "https://github.com/microsoft/diskspd/releases/latest/download/DiskSpd.zip",
+      "archive_sha256": "496df11e6375c1d564af3f8f2990734d9afc2b558469fd57b1bffa9313a5a6ce",
+      "authenticode_status": "Valid",
+      "signer": "Microsoft Windows"
+    },
+    "method": {
+      "access": "read-only uniform random",
+      "software_cache": false,
+      "block_mib": 12,
+      "queue_depth_1_repetitions": 3,
+      "queue_depth_8_repetitions": 2,
+      "measured_seconds_per_run": 12,
+      "warmup_seconds": 3,
+      "fit_block_mib": [
+        1,
+        4,
+        12
+      ]
+    },
+    "devices": {
+      "p2": {
+        "model": "CT500P2SSD8",
+        "firmware": "P2CR033",
+        "bus": "NVMe",
+        "queue_depth_1": {
+          "median_throughput_gbps": 1.7213758880932557,
+          "median_average_latency_ms": 7.308,
+          "median_p50_latency_ms": 6.51,
+          "median_p95_latency_ms": 14.035,
+          "median_p99_latency_ms": 17.045
+        },
+        "queue_depth_8": {
+          "median_throughput_gbps": 1.9529728,
+          "median_average_latency_ms": 51.562,
+          "median_p50_latency_ms": 49.969,
+          "median_p95_latency_ms": 61.8015,
+          "median_p99_latency_ms": 67.5965
+        },
+        "linear_fit": {
+          "bandwidth_gbps": 1.8371398872015787,
+          "latency_us": 465.1623711340207,
+          "r_squared": 0.9999587702370383
+        }
+      },
+      "p310": {
+        "model": "CT1000P310SSD8",
+        "firmware": "V8CR001",
+        "bus": "NVMe",
+        "queue_depth_1": {
+          "median_throughput_gbps": 5.260705792,
+          "median_average_latency_ms": 2.391,
+          "median_p50_latency_ms": 2.383,
+          "median_p95_latency_ms": 2.702,
+          "median_p99_latency_ms": 2.929
+        },
+        "queue_depth_8": {
+          "median_throughput_gbps": 7.093092352,
+          "median_average_latency_ms": 14.124,
+          "median_p50_latency_ms": 14.059,
+          "median_p95_latency_ms": 15.187,
+          "median_p99_latency_ms": 16.5585
+        },
+        "linear_fit": {
+          "bandwidth_gbps": 6.036850283408019,
+          "latency_us": 299.056701030928,
+          "r_squared": 0.9993634606891678
+        }
+      }
+    }
+  },
+  "ram_to_vram": {
+    "tool": "moevm.cuda_transfer_benchmark",
+    "torch": "2.12.1+cu130",
+    "chunk_mib": 12,
+    "long_run_repetitions": 3,
+    "operations_per_long_run": 2048,
+    "fit_block_mib": [
+      1,
+      4,
+      12
+    ],
+    "cases": {
+      "pageable_sync": {
+        "median_wall_throughput_gbps": 11.816783966909453,
+        "median_cuda_event_mean_ms": 1.0517834998317994,
+        "median_cuda_event_p50_ms": 1.0395840406417847,
+        "median_cuda_event_p95_ms": 1.1097408056259153,
+        "median_cuda_event_p99_ms": 1.1774393332004547,
+        "linear_fit_bandwidth_gbps": 12.618014666206093,
+        "linear_fit_latency_us": 53.44966829065972,
+        "linear_fit_r_squared": 0.9999399114108249
+      },
+      "pinned_sync": {
+        "median_wall_throughput_gbps": 12.525620131551607,
+        "median_cuda_event_mean_ms": 0.9901312809670344,
+        "median_cuda_event_p50_ms": 0.9913119971752167,
+        "median_cuda_event_p95_ms": 1.021563220024109,
+        "median_cuda_event_p99_ms": 1.0526752114295959,
+        "linear_fit_bandwidth_gbps": 12.998645783633956,
+        "linear_fit_latency_us": 22.317114709405452,
+        "linear_fit_r_squared": 0.9999978895172458
+      },
+      "pinned_async": {
+        "median_wall_throughput_gbps": 13.003560023391447,
+        "median_cuda_event_mean_ms": 0.9503788748988882,
+        "median_cuda_event_p50_ms": 0.943120002746582,
+        "median_cuda_event_p95_ms": 0.9942544102668761,
+        "median_cuda_event_p99_ms": 1.009857965707779,
+        "linear_fit_bandwidth_gbps": 13.290784927422214,
+        "linear_fit_latency_us": 3.6351075002514777,
+        "linear_fit_r_squared": 0.9999999990562609
+      }
+    }
+  },
+  "calibrated_replay": {
+    "config": "configs/olmoe_rtx3080ti_p310.toml",
+    "fixed_latency_scope": "per_expert",
+    "traces": 10,
+    "baseline_elapsed_ms": 48203.98978742314,
+    "prefetch_elapsed_ms": 49233.81474742315,
+    "aggregate_speedup": 0.9790829744702261,
+    "mean_trace_speedup": 0.979650290064176,
+    "min_trace_speedup": 0.9582002237128573,
+    "max_trace_speedup": 0.9973320688560164,
+    "mean_ram_to_vram_traffic_change_percent": 4.91062276143764,
+    "p310_baseline_speedup_over_p2": 1.8853254528317318,
+    "p310_vs_p2_method": "Both storage profiles use the unrounded measured fits and per-expert fixed latency; RAM-to-VRAM terms are identical."
+  },
+  "limitations": [
+    "These are isolated transfer microbenchmarks, not end-to-end inference measurements.",
+    "The simulator compute time and overlap efficiency remain provisional.",
+    "VRAM/RAM cache capacities and the speculative-cache fraction are experiment choices, not measured hardware properties.",
+    "The P310 is the Windows system drive, so workstation contention may affect results.",
+    "DiskSpd bypasses the Windows software cache, but controller and device caches remain active.",
+    "The replay result evaluates the existing one-step predictor, not the planned expert-placement runtime."
+  ]
+}

@@ -12,6 +12,16 @@ from .analysis import (
     write_trace_analysis,
 )
 from .config import ExperimentConfig, load_config
+from .placement_analysis import (
+    PLACEMENT_POLICIES,
+    PlacementTrace,
+    analyze_placement_leave_one_workload_out,
+    analyze_placement_train_test,
+    discover_trace_paths,
+    load_placement_traces,
+    placement_analysis_console,
+    write_placement_analysis,
+)
 from .report import comparison_console, write_comparison
 from .simulator import compare_experiment, run_experiment
 from .trace import SyntheticRoutingTrace, read_trace, write_trace
@@ -101,7 +111,109 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-write", action="store_true", help="print without writing reports"
     )
 
+    placement = subparsers.add_parser(
+        "analyze-placement",
+        help="evaluate auditable cache placement policies on JSONL traces",
+    )
+    placement.add_argument("--config", required=True, help="model configuration")
+    placement.add_argument(
+        "--train-trace", action="append", default=[], help="training JSONL trace"
+    )
+    placement.add_argument(
+        "--train-dir",
+        action="append",
+        default=[],
+        help="directory of training *.trace.jsonl files",
+    )
+    placement.add_argument(
+        "--test-trace", action="append", default=[], help="test JSONL trace"
+    )
+    placement.add_argument(
+        "--test-dir",
+        action="append",
+        default=[],
+        help="directory of test *.trace.jsonl files",
+    )
+    placement.add_argument(
+        "--protocol",
+        choices=("train-test", "leave-one-workload-out"),
+        default="train-test",
+    )
+    placement.add_argument("--capacity-per-layer", type=int, required=True)
+    placement.add_argument(
+        "--layer-capacity",
+        action="append",
+        default=[],
+        metavar="LAYER=SLOTS",
+        help="override one layer; when used, specify every differing layer",
+    )
+    placement.add_argument("--protected-hot", type=int, default=0)
+    placement.add_argument(
+        "--policy",
+        action="append",
+        choices=PLACEMENT_POLICIES,
+        help="policy to evaluate; repeat to select multiple (default: all)",
+    )
+    placement.add_argument(
+        "--output",
+        default="results/placement-analysis.json",
+        help="JSON report path",
+    )
+
     return parser
+
+
+def _placement_capacities(
+    default: int, overrides: list[str], layer_count: int
+) -> int | dict[int, int]:
+    if not overrides:
+        return default
+    parsed = {layer: default for layer in range(layer_count)}
+    overridden: set[int] = set()
+    for raw_override in overrides:
+        try:
+            raw_layer, raw_slots = raw_override.split("=", maxsplit=1)
+            layer = int(raw_layer)
+            slots = int(raw_slots)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid --layer-capacity {raw_override!r}; expected LAYER=SLOTS"
+            ) from exc
+        if layer < 0 or slots < 0:
+            raise ValueError("layer-capacity values cannot be negative")
+        if layer >= layer_count:
+            raise ValueError(f"layer-capacity layer exceeds model: {layer}")
+        if layer in overridden:
+            raise ValueError(f"duplicate layer-capacity override: {layer}")
+        parsed[layer] = slots
+        overridden.add(layer)
+    return parsed
+
+
+def _validate_placement_shape(
+    config: ExperimentConfig, traces: tuple[PlacementTrace, ...]
+) -> None:
+    expected_layers = tuple(range(config.model.layers))
+    for trace in traces:
+        layers = tuple(sorted({step.layer_index for step in trace.steps}))
+        if layers != expected_layers:
+            raise ValueError(
+                "placement trace layer count does not match model.layers: "
+                f"{len(layers)} != {config.model.layers} ({trace.source})"
+            )
+        if any(len(step.experts) != config.model.top_k for step in trace.steps):
+            raise ValueError(
+                f"placement trace top-k does not match model.top_k: {trace.source}"
+            )
+        if any(
+            expert >= config.model.experts_per_layer
+            for step in trace.steps
+            for expert in step.experts
+        ):
+            raise ValueError(
+                "placement trace expert id exceeds model.experts_per_layer: "
+                f"{trace.source}"
+            )
 
 
 def _doctor(config: ExperimentConfig) -> str:
@@ -201,9 +313,40 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"\nWrote {json_path} and {markdown_path}")
             return 0
 
+        if args.command == "analyze-placement":
+            train_paths = discover_trace_paths(
+                traces=args.train_trace, directories=args.train_dir
+            )
+            test_paths = discover_trace_paths(
+                traces=args.test_trace, directories=args.test_dir
+            )
+            train = load_placement_traces(train_paths)
+            test = load_placement_traces(test_paths)
+            _validate_placement_shape(config, train + test)
+            options = {
+                "capacity_per_layer": _placement_capacities(
+                    args.capacity_per_layer,
+                    args.layer_capacity,
+                    config.model.layers,
+                ),
+                "protected_hot": args.protected_hot,
+                "expert_bytes": config.model.expert_size_bytes,
+                "policies": args.policy or PLACEMENT_POLICIES,
+            }
+            if args.protocol == "train-test":
+                report = analyze_placement_train_test(train, test, **options)
+            else:
+                report = analyze_placement_leave_one_workload_out(
+                    train, test, **options
+                )
+            print(placement_analysis_console(report))
+            output_path = write_placement_analysis(args.output, report)
+            print(f"\nWrote {output_path}")
+            return 0
+
         parser.error(f"unknown command: {args.command}")
         return 2
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
