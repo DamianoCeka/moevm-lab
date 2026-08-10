@@ -131,6 +131,8 @@ class TransferResult:
     storage_hits: int = 0
     bytes_ram_to_vram: int = 0
     bytes_nvme_to_ram: int = 0
+    ram_to_vram_transfers: int = 0
+    nvme_to_ram_transfers: int = 0
     transfer_ms: float = 0.0
     rejected_capacity: int = 0
     l1_hit_keys: set[ExpertKey] = field(default_factory=set)
@@ -175,19 +177,43 @@ class HierarchicalExpertCache:
         return tuple(dict.fromkeys(keys))
 
     def _transfer_time_ms(
-        self, ram_to_vram_bytes: int, nvme_to_ram_bytes: int
+        self,
+        ram_to_vram_bytes: int,
+        nvme_to_ram_bytes: int,
+        *,
+        ram_to_vram_transfers: int,
+        nvme_to_ram_transfers: int,
     ) -> float:
+        def latency_multiplier(bytes_transferred: int, transfers: int) -> int:
+            if bytes_transferred == 0:
+                if transfers != 0:
+                    raise ValueError("zero-byte paths cannot contain transfers")
+                return 0
+            if transfers <= 0:
+                raise ValueError("non-empty paths require at least one transfer")
+            if self.hardware.fixed_latency_scope == "batch":
+                return 1
+            return transfers
+
+        nvme_latency_charges = latency_multiplier(
+            nvme_to_ram_bytes, nvme_to_ram_transfers
+        )
+        ram_latency_charges = latency_multiplier(
+            ram_to_vram_bytes, ram_to_vram_transfers
+        )
         milliseconds = 0.0
         if nvme_to_ram_bytes:
             milliseconds += (
                 nvme_to_ram_bytes / (self.hardware.nvme_to_ram_gbps * 1_000_000_000)
             ) * 1000.0
-            milliseconds += self.hardware.nvme_latency_us / 1000.0
+            milliseconds += (
+                nvme_latency_charges * self.hardware.nvme_latency_us / 1000.0
+            )
         if ram_to_vram_bytes:
             milliseconds += (
                 ram_to_vram_bytes / (self.hardware.ram_to_vram_gbps * 1_000_000_000)
             ) * 1000.0
-            milliseconds += self.hardware.ram_latency_us / 1000.0
+            milliseconds += ram_latency_charges * self.hardware.ram_latency_us / 1000.0
         return milliseconds
 
     def _remove_from_vram(
@@ -242,6 +268,8 @@ class HierarchicalExpertCache:
         rejected = 0
         ram_to_vram_bytes = 0
         nvme_to_ram_bytes = 0
+        ram_to_vram_transfers = 0
+        nvme_to_ram_transfers = 0
 
         for key in self._deduplicate(keys):
             candidate_ram_bytes, candidate_nvme_bytes = (
@@ -251,11 +279,19 @@ class HierarchicalExpertCache:
             proposed_ms = self._transfer_time_ms(
                 ram_to_vram_bytes + candidate_ram_bytes,
                 nvme_to_ram_bytes + candidate_nvme_bytes,
+                ram_to_vram_transfers=(
+                    ram_to_vram_transfers + int(candidate_ram_bytes > 0)
+                ),
+                nvme_to_ram_transfers=(
+                    nvme_to_ram_transfers + int(candidate_nvme_bytes > 0)
+                ),
             )
             if proposed_ms <= budget_ms + 1e-12:
                 admitted.append(key)
                 ram_to_vram_bytes += candidate_ram_bytes
                 nvme_to_ram_bytes += candidate_nvme_bytes
+                ram_to_vram_transfers += int(candidate_ram_bytes > 0)
+                nvme_to_ram_transfers += int(candidate_nvme_bytes > 0)
                 simulation.prefetch_many((key,))
             else:
                 rejected += 1
@@ -284,10 +320,13 @@ class HierarchicalExpertCache:
             if self.l2.touch(key):
                 result.l2_hits += 1
                 result.bytes_ram_to_vram += self.expert_size_bytes
+                result.ram_to_vram_transfers += 1
             else:
                 result.storage_hits += 1
                 result.bytes_nvme_to_ram += self.expert_size_bytes
                 result.bytes_ram_to_vram += self.expert_size_bytes
+                result.nvme_to_ram_transfers += 1
+                result.ram_to_vram_transfers += 1
                 stored_l2, evicted_l2 = self.l2.put(key, self.expert_size_bytes)
                 if stored_l2:
                     self._remove_from_vram(evicted_l2, result)
@@ -300,6 +339,8 @@ class HierarchicalExpertCache:
         result.transfer_ms = self._transfer_time_ms(
             result.bytes_ram_to_vram,
             result.bytes_nvme_to_ram,
+            ram_to_vram_transfers=result.ram_to_vram_transfers,
+            nvme_to_ram_transfers=result.nvme_to_ram_transfers,
         )
         return result
 
@@ -323,6 +364,7 @@ class HierarchicalExpertCache:
             if self.l2.touch(key):
                 result.l2_hits += 1
                 result.bytes_ram_to_vram += self.expert_size_bytes
+                result.ram_to_vram_transfers += 1
             else:
                 stored_l2, evicted_l2 = self.l2.put(
                     key,
@@ -335,6 +377,8 @@ class HierarchicalExpertCache:
                 result.storage_hits += 1
                 result.bytes_nvme_to_ram += self.expert_size_bytes
                 result.bytes_ram_to_vram += self.expert_size_bytes
+                result.nvme_to_ram_transfers += 1
+                result.ram_to_vram_transfers += 1
                 self._remove_from_vram(evicted_l2, result)
 
             stored, evicted = self.prefetch_l1.put(key, self.expert_size_bytes)
@@ -345,6 +389,8 @@ class HierarchicalExpertCache:
         result.transfer_ms = self._transfer_time_ms(
             result.bytes_ram_to_vram,
             result.bytes_nvme_to_ram,
+            ram_to_vram_transfers=result.ram_to_vram_transfers,
+            nvme_to_ram_transfers=result.nvme_to_ram_transfers,
         )
         result.resident_loaded_to_l1 = result.loaded_to_l1.intersection(
             self.prefetch_l1.keys()

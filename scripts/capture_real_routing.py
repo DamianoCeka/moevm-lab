@@ -78,7 +78,8 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -488,6 +489,7 @@ def main() -> int:
         local_files_only=True,
     )
     print("Loading checkpoint with GPU/CPU dispatch...")
+    load_started = time.perf_counter()
     model = AutoModelForCausalLM.from_pretrained(
         snapshot_path,
         dtype=torch.bfloat16,
@@ -499,6 +501,8 @@ def main() -> int:
         local_files_only=True,
         attn_implementation="sdpa",
     )
+    model_load_seconds = time.perf_counter() - load_started
+    print(f"Loaded checkpoint in {model_load_seconds:.3f} seconds")
     model.eval()
     resolved_revision = getattr(model.config, "_commit_hash", None)
     if resolved_revision not in (None, args.revision):
@@ -534,6 +538,13 @@ def main() -> int:
         "revision": args.revision,
         "seed": args.seed,
         "temperature": args.temperature,
+        "model_load_seconds": model_load_seconds,
+        "dispatch": {
+            "gpu_memory": args.gpu_memory,
+            "cpu_memory": args.cpu_memory,
+            "dtype": "bfloat16",
+            "device_map": "auto",
+        },
         "records": records,
     }
     manifest_path = output_dir / "manifest.json"

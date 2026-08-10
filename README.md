@@ -100,6 +100,7 @@ moevm run      Run one mode and print metrics
 moevm trace    Generate a reusable JSONL routing trace
 moevm doctor   Validate configuration and display cache capacity
 moevm analyze-trace  Analyze locality, router scores and predictability
+moevm analyze-placement  Compare audited train/test placement policies
 ```
 
 A real routing trace uses one JSON object per line:

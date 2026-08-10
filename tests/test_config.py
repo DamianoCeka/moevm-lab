@@ -32,6 +32,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.model.layers, 12)
         self.assertEqual(config.model.top_k, 4)
         self.assertGreater(config.hardware.vram_cache_bytes, 0)
+        self.assertEqual(config.hardware.fixed_latency_scope, "batch")
+
+    def test_calibrated_profile_uses_per_expert_fixed_latency(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        config = load_config(root / "configs" / "olmoe_rtx3080ti_p310.toml")
+
+        self.assertEqual(config.hardware.fixed_latency_scope, "per_expert")
 
     def test_rejects_non_finite_bandwidth(self) -> None:
         hardware = HardwareConfig(
@@ -56,6 +63,17 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be an integer"):
             invalid_model.validate()
 
+    def test_rejects_unknown_fixed_latency_scope(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        config = load_config(root / "configs" / "toy.toml")
+        invalid_hardware = replace(
+            config.hardware,
+            fixed_latency_scope="operation",  # type: ignore[arg-type]
+        )
+
+        with self.assertRaisesRegex(ValueError, "fixed_latency_scope"):
+            invalid_hardware.validate()
+
     def test_bundled_default_config_matches_repository_config(self) -> None:
         root = Path(__file__).resolve().parents[1]
 
@@ -70,6 +88,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             Path(_bundled_config("olmoe_1b_7b_0924.toml")).read_bytes(),
             (root / "configs" / "olmoe_1b_7b_0924.toml").read_bytes(),
+        )
+        self.assertEqual(
+            Path(_bundled_config("olmoe_rtx3080ti_p310.toml")).read_bytes(),
+            (root / "configs" / "olmoe_rtx3080ti_p310.toml").read_bytes(),
         )
 
 
