@@ -227,6 +227,15 @@ def _verify_pinned_shards(
     return verified
 
 
+def _close_store_and_verify_pinned_shards(
+    store: Any,
+    snapshot: Path,
+) -> dict[str, dict[str, int | str]]:
+    """Release live mappings before the independent checkpoint integrity pass."""
+    store.close()
+    return _verify_pinned_shards(snapshot)
+
+
 def _validate_pinned_shard_files(snapshot: Path) -> dict[str, int]:
     sizes: dict[str, int] = {}
     for filename, expected_size in PINNED_SHARD_SIZES.items():
@@ -906,8 +915,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     **reference_metadata,
                 }
 
+            # No expert reads occur after the two inference passes.  The helper
+            # releases persistent mappings before the independent integrity gate.
             verification_started = time.perf_counter()
-            shard_verification = _verify_pinned_shards(snapshot)
+            shard_verification = _close_store_and_verify_pinned_shards(
+                store,
+                snapshot,
+            )
             verification_seconds = time.perf_counter() - verification_started
             comparison = {
                 "repeat_over_cold_speedup": _ratio(
