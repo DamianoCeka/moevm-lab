@@ -82,6 +82,13 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertIsNone(args.prompt)
         self.assertFalse(args.teacher_force_reference)
 
+        long_args = self._args("--max-new-tokens", "64")
+        _HARNESS._validate_args(long_args)
+        self.assertEqual(long_args.max_new_tokens, 64)
+        parse_max_new_tokens = _HARNESS._bounded_integer("max-new-tokens", 1, 64)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_max_new_tokens("65")
+
     def test_policy_and_device_validation_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires --hotset-json"):
             _HARNESS._validate_args(self._args("--policy", "hybrid"))
@@ -365,6 +372,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(model.calls[1]["past"], {"length": 3})
 
         teacher_forced_model = FakeModel()
+        FakeTokenizer.eos_token_id = 5
         teacher_forced = _HARNESS._run_inference_pass(
             label="cold_expert_cache",
             torch=torch,
@@ -392,6 +400,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             },
         )
         self.assertEqual(teacher_forced_model.calls[1]["input_ids"], (5,))
+        self.assertEqual(teacher_forced["decode"]["token_count"], 1)
 
 
 if __name__ == "__main__":

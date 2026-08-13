@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-new-tokens",
-        type=_bounded_integer("max-new-tokens", 1, 16),
+        type=_bounded_integer("max-new-tokens", 1, 64),
         default=2,
     )
     parser.add_argument("--seed", type=int, default=17)
@@ -566,7 +566,11 @@ def _run_inference_pass(
     eos_token_id = tokenizer.eos_token_id
 
     for token_index in range(1, max_new_tokens):
-        if eos_token_id is not None and fed_token_ids[-1] == eos_token_id:
+        if (
+            forced_token_ids is None
+            and eos_token_id is not None
+            and fed_token_ids[-1] == eos_token_id
+        ):
             break
         full_attention_mask = torch.cat(
             (
