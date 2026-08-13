@@ -80,6 +80,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(args.staging_slots, 1)
         self.assertEqual(args.max_new_tokens, 2)
         self.assertIsNone(args.prompt)
+        self.assertFalse(args.teacher_force_reference)
 
     def test_policy_and_device_validation_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires --hotset-json"):
@@ -90,6 +91,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "device must"):
             _HARNESS._validate_args(self._args("--device", "cpu"))
+        with self.assertRaisesRegex(ValueError, "requires --reference-metadata"):
+            _HARNESS._validate_args(self._args("--teacher-force-reference"))
 
     def test_workload_file_selects_exact_prompt(self) -> None:
         workload_path = self.root / "workloads.json"
@@ -305,6 +308,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                 self.calls.append(
                     {
                         "input_shape": tuple(input_ids.shape),
+                        "input_ids": tuple(int(value) for value in input_ids.flatten()),
                         "mask_shape": tuple(attention_mask.shape),
                         "past": past_key_values,
                     }
@@ -359,6 +363,35 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(model.calls[1]["input_shape"], (1, 1))
         self.assertEqual(model.calls[1]["mask_shape"], (1, 4))
         self.assertEqual(model.calls[1]["past"], {"length": 3})
+
+        teacher_forced_model = FakeModel()
+        teacher_forced = _HARNESS._run_inference_pass(
+            label="cold_expert_cache",
+            torch=torch,
+            model=teacher_forced_model,
+            tokenizer=FakeTokenizer(),
+            runtime=FakeRuntime(),
+            input_ids=torch.tensor([[1, 2, 3]]),
+            attention_mask=torch.ones(1, 3, dtype=torch.long),
+            max_new_tokens=2,
+            expert_bytes=12,
+            forced_token_ids=[5, 7],
+        )
+
+        self.assertEqual(teacher_forced["generated_ids"], [4, 6])
+        self.assertEqual(teacher_forced["fed_token_ids"], [5, 7])
+        self.assertTrue(teacher_forced["teacher_forced"])
+        self.assertEqual(
+            teacher_forced["reference_prediction"],
+            {
+                "matched_tokens": 0,
+                "total_tokens": 2,
+                "match_rate": 0.0,
+                "exact_match": False,
+                "first_mismatch_index": 0,
+            },
+        )
+        self.assertEqual(teacher_forced_model.calls[1]["input_ids"], (5,))
 
 
 if __name__ == "__main__":
