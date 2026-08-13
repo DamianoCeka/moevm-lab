@@ -132,6 +132,30 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                 expected_hashes={shard.name: "0" * 64},
             )
 
+    def test_store_is_closed_before_checkpoint_verification(self) -> None:
+        events: list[str] = []
+
+        class FakeStore:
+            @staticmethod
+            def close() -> None:
+                events.append("close")
+
+        original = _HARNESS._verify_pinned_shards
+        _HARNESS._verify_pinned_shards = lambda _snapshot: (
+            events.append("verify") or {"verified": {}}
+        )
+        self.addCleanup(
+            lambda: setattr(_HARNESS, "_verify_pinned_shards", original)
+        )
+
+        verified = _HARNESS._close_store_and_verify_pinned_shards(
+            FakeStore(),
+            self.root,
+        )
+
+        self.assertEqual(events, ["close", "verify"])
+        self.assertEqual(verified, {"verified": {}})
+
     def test_hotset_is_revision_bound_and_leaves_dynamic_slot(self) -> None:
         hotset_path = self.root / "hotset.json"
         hotset_path.write_text(
