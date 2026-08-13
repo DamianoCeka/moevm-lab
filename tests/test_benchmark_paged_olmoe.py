@@ -144,9 +144,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         _HARNESS._verify_pinned_shards = lambda _snapshot: (
             events.append("verify") or {"verified": {}}
         )
-        self.addCleanup(
-            lambda: setattr(_HARNESS, "_verify_pinned_shards", original)
-        )
+        self.addCleanup(lambda: setattr(_HARNESS, "_verify_pinned_shards", original))
 
         verified = _HARNESS._close_store_and_verify_pinned_shards(
             FakeStore(),
