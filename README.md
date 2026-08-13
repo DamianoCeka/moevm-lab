@@ -169,8 +169,8 @@ benchmarks/reference/  Committed simulation, calibration and runtime evidence
 2. **Capture real routing traces** from a small open MoE — complete in v0.2.
 3. **Replay traces against measured hardware** rather than assumed bandwidth —
    first workstation profile complete.
-4. **Bounded expert-paging runtime on a small real MoE** — first synchronous
-   full-model smoke complete; multi-workload validation remains.
+4. **Bounded expert-paging runtime on a small real MoE** — synchronous
+   full-model smoke and five-workload teacher-forced validation complete.
 5. **Pinned-RAM expert cache, CUDA streams and asynchronous NVMe reads.**
 6. **Tile-level streaming and out-of-order expert scheduling.**
 7. **K3 checkpoint adapter**, only after smaller real models validate the design.

@@ -122,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-metadata",
         help="Optional v1 pinned greedy-baseline metadata used as a correctness gate.",
     )
+    parser.add_argument(
+        "--teacher-force-reference",
+        action="store_true",
+        help=(
+            "Feed the pinned reference continuation while recording greedy "
+            "predictions. Requires --reference-metadata and keeps the default "
+            "autoregressive exact-match gate unchanged."
+        ),
+    )
     return parser
 
 
@@ -138,6 +147,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("hybrid policy requires --hotset-json")
     if args.policy == "lru" and args.hotset_json:
         raise ValueError("--hotset-json is only valid with --policy hybrid")
+    if args.teacher_force_reference and not args.reference_metadata:
+        raise ValueError("--teacher-force-reference requires --reference-metadata")
     output_path = Path(args.output).expanduser()
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite output: {output_path}")
@@ -499,7 +510,10 @@ def _run_inference_pass(
     attention_mask: Any,
     max_new_tokens: int,
     expert_bytes: int,
+    forced_token_ids: list[int] | None = None,
 ) -> dict[str, Any]:
+    if forced_token_ids is not None and len(forced_token_ids) != max_new_tokens:
+        raise ValueError("forced_token_ids must contain exactly max_new_tokens entries")
     gc.collect()
     baseline_allocated = _reset_cuda_peak(torch)
     _sync_cuda(torch)
@@ -520,14 +534,29 @@ def _run_inference_pass(
     prefill_seconds = time.perf_counter() - prefill_started
     prefill_metrics = _metrics_delta(runtime.metrics(), prefill_metrics_before)
     _validate_metric_delta(prefill_metrics, expert_bytes=expert_bytes)
-    next_token = output.logits[:, -1:].argmax(dim=-1)
+    predicted_token = output.logits[:, -1:].argmax(dim=-1)
     past_key_values = output.past_key_values
     del output
-    generated_ids = [int(next_token.item())]
+    generated_ids = [int(predicted_token.item())]
+    fed_token_ids = [
+        forced_token_ids[0] if forced_token_ids is not None else generated_ids[0]
+    ]
+    next_token = torch.tensor(
+        [[fed_token_ids[0]]],
+        dtype=predicted_token.dtype,
+        device=predicted_token.device,
+    )
     token_records: list[dict[str, Any]] = [
         {
             "index": 0,
             "token_id": generated_ids[0],
+            "predicted_token_id": generated_ids[0],
+            "fed_token_id": fed_token_ids[0],
+            "matched_forced_token": (
+                None
+                if forced_token_ids is None
+                else generated_ids[0] == fed_token_ids[0]
+            ),
             "source": "prefill_to_first_token",
             "latency_seconds": prefill_seconds,
             "metrics": prefill_metrics,
@@ -537,7 +566,7 @@ def _run_inference_pass(
     eos_token_id = tokenizer.eos_token_id
 
     for token_index in range(1, max_new_tokens):
-        if eos_token_id is not None and generated_ids[-1] == eos_token_id:
+        if eos_token_id is not None and fed_token_ids[-1] == eos_token_id:
             break
         full_attention_mask = torch.cat(
             (
@@ -563,14 +592,31 @@ def _run_inference_pass(
             )
         _sync_cuda(torch)
         token_seconds = time.perf_counter() - token_started
-        next_token = output.logits[:, -1:].argmax(dim=-1)
-        generated_ids.append(int(next_token.item()))
+        predicted_token = output.logits[:, -1:].argmax(dim=-1)
+        generated_ids.append(int(predicted_token.item()))
+        fed_token_ids.append(
+            forced_token_ids[token_index]
+            if forced_token_ids is not None
+            else generated_ids[-1]
+        )
+        next_token = torch.tensor(
+            [[fed_token_ids[-1]]],
+            dtype=predicted_token.dtype,
+            device=predicted_token.device,
+        )
         past_key_values = output.past_key_values
         del output
         token_records.append(
             {
                 "index": token_index,
                 "token_id": generated_ids[-1],
+                "predicted_token_id": generated_ids[-1],
+                "fed_token_id": fed_token_ids[-1],
+                "matched_forced_token": (
+                    None
+                    if forced_token_ids is None
+                    else generated_ids[-1] == fed_token_ids[-1]
+                ),
                 "source": "decode",
                 "latency_seconds": token_seconds,
                 "metrics": _metrics_delta(runtime.metrics(), token_metrics_before),
@@ -589,6 +635,18 @@ def _run_inference_pass(
         float(record["latency_seconds"]) for record in token_records[1:]
     ]
     decode_seconds = sum(decode_latencies)
+    matched_forced_tokens = (
+        None
+        if forced_token_ids is None
+        else sum(
+            predicted == forced
+            for predicted, forced in zip(
+                generated_ids,
+                fed_token_ids,
+                strict=True,
+            )
+        )
+    )
     return {
         "label": label,
         "cache_state": (
@@ -616,8 +674,35 @@ def _run_inference_pass(
             len(generated_ids) / pass_seconds
         ),
         "generated_ids": generated_ids,
+        "fed_token_ids": fed_token_ids,
+        "teacher_forced": forced_token_ids is not None,
+        "reference_prediction": (
+            None
+            if matched_forced_tokens is None
+            else {
+                "matched_tokens": matched_forced_tokens,
+                "total_tokens": len(generated_ids),
+                "match_rate": _ratio(matched_forced_tokens, len(generated_ids)),
+                "exact_match": matched_forced_tokens == len(generated_ids),
+                "first_mismatch_index": next(
+                    (
+                        index
+                        for index, (predicted, forced) in enumerate(
+                            zip(generated_ids, fed_token_ids, strict=True)
+                        )
+                        if predicted != forced
+                    ),
+                    None,
+                ),
+            }
+        ),
         "generated_text": tokenizer.decode(
             generated_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        ),
+        "fed_text": tokenizer.decode(
+            fed_token_ids,
             skip_special_tokens=False,
             clean_up_tokenization_spaces=False,
         ),
@@ -701,6 +786,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             prompt=prompt,
             max_new_tokens=args.max_new_tokens,
         )
+    forced_token_ids = None
+    if args.teacher_force_reference:
+        forced_token_ids = reference_metadata["generated_token_ids"]
+        if len(forced_token_ids) != args.max_new_tokens:
+            raise ValueError(
+                "teacher-forced reference must contain at least max_new_tokens IDs"
+            )
 
     import torch
     from accelerate import init_empty_weights
@@ -879,6 +971,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 attention_mask=attention_mask,
                 max_new_tokens=args.max_new_tokens,
                 expert_bytes=store.spec.size_bytes,
+                forced_token_ids=forced_token_ids,
             )
             gc.collect()
             torch.cuda.empty_cache()
@@ -892,6 +985,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 attention_mask=attention_mask,
                 max_new_tokens=args.max_new_tokens,
                 expert_bytes=store.spec.size_bytes,
+                forced_token_ids=forced_token_ids,
             )
             if cold["generated_ids"] != warm["generated_ids"]:
                 raise RuntimeError("cold and warm greedy outputs differ")
@@ -905,13 +999,37 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 reference_ids = reference_metadata["generated_token_ids"]
                 actual_prefix = cold["generated_ids"][: len(reference_ids)]
-                if actual_prefix != reference_ids:
+                if actual_prefix != reference_ids and not args.teacher_force_reference:
                     raise RuntimeError(
                         "paged greedy token IDs differ from the pinned baseline prefix"
                     )
                 reference_comparison = {
                     "available": True,
-                    "matched": True,
+                    "matched": actual_prefix == reference_ids,
+                    "mode": (
+                        "teacher_forced"
+                        if args.teacher_force_reference
+                        else "autoregressive_exact_gate"
+                    ),
+                    "matched_tokens": sum(
+                        actual == expected
+                        for actual, expected in zip(
+                            actual_prefix,
+                            reference_ids,
+                            strict=True,
+                        )
+                    ),
+                    "total_tokens": len(reference_ids),
+                    "first_mismatch_index": next(
+                        (
+                            index
+                            for index, (actual, expected) in enumerate(
+                                zip(actual_prefix, reference_ids, strict=True)
+                            )
+                            if actual != expected
+                        ),
+                        None,
+                    ),
                     **reference_metadata,
                 }
 
@@ -980,6 +1098,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         "One prompt and at most a few greedy tokens cannot establish production performance.",
                         "Prefill groups unique active experts per layer; its lookups are not a tokenwise trace replay.",
                         "No model.to/cuda/cpu, torch.compile, or graph capture is allowed after partial meta loading.",
+                        (
+                            "Teacher-forced mode measures a fixed reference prefix and does not establish autoregressive output identity."
+                            if args.teacher_force_reference
+                            else "The default reference gate requires exact autoregressive token identity."
+                        ),
                     ],
                 },
                 "model": {
@@ -1014,7 +1137,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "input_ids": [int(token) for token in input_ids[0].tolist()],
                     "input_tokens": int(input_ids.shape[-1]),
                     "max_new_tokens": args.max_new_tokens,
-                    "decoding": "greedy",
+                    "decoding": (
+                        "teacher-forced reference with greedy predictions"
+                        if args.teacher_force_reference
+                        else "greedy"
+                    ),
                     "seed": args.seed,
                 },
                 "model_load": model_load,
