@@ -89,6 +89,22 @@ La simulazione senza modello/GPU resta disponibile con:
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 ```
 
+## Supporto commerciale e pilot
+
+Team, laboratori e produttori di workstation che devono capire se un modello
+MoE può funzionare su hardware con VRAM limitata possono richiedere un audit a
+pagamento e con perimetro fisso. Il risultato comprende misure riproducibili,
+analisi dei colli di bottiglia e una raccomandazione finale; può anche concludere
+che MoEVM o l'hardware disponibile non sono adatti.
+
+L'intervallo introduttivo e non vincolante per un pilot riproducibile è EUR
+1.500–2.500, soggetto a preventivo scritto. Il codice community resta
+Apache-2.0 e non vengono garantiti speedup, compatibilità con checkpoint
+arbitrari o SLA di produzione. Dettagli, deliverable e modulo pubblico sono in
+[Supporto commerciale](../COMMERCIAL_SUPPORT.md). Non inserire dati riservati,
+pesi privati o credenziali nelle issue GitHub; prima di inviare leggi
+l'[informativa per le richieste pubbliche](../PRIVACY.md).
+
 ## Obiettivo successivo
 
 La prossima mossa seria non è K3: è estendere il confronto sync/async dai due

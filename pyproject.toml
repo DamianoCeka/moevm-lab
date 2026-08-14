@@ -40,6 +40,7 @@ Repository = "https://github.com/DamianoCeka/moevm-lab"
 Issues = "https://github.com/DamianoCeka/moevm-lab/issues"
 Changelog = "https://github.com/DamianoCeka/moevm-lab/blob/main/CHANGELOG.md"
 Documentation = "https://github.com/DamianoCeka/moevm-lab/tree/main/docs"
+"Commercial support" = "https://github.com/DamianoCeka/moevm-lab/blob/main/COMMERCIAL_SUPPORT.md"
 
 [project.scripts]
 moevm = "moevm.cli:main"

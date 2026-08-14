@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a public, non-confidential commercial inquiry path and a fixed-scope
+  design-partner offer for model/hardware fit audits, while keeping the
+  community core Apache-2.0 and explicitly avoiding guaranteed performance or
+  production-readiness claims.
 - Added a Windows `demo.cmd` entry point that detects hardware, prepares an
   isolated pinned CUDA environment, acquires and verifies the supported OLMoE
   checkpoint, selects a guarded GPU-cache capacity and prints real paged-runtime
