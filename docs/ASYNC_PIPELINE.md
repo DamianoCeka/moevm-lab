@@ -27,6 +27,11 @@ layer-local ordering. The current design intentionally uses one I/O worker
 because safetensors shard access is serialized and additional workers would not
 yet demonstrate useful physical storage parallelism.
 
+Lookahead schedules only storage work. It does not update logical requests,
+hit/miss counters or LRU recency. Those transitions occur when the runtime
+actually consumes each expert, in the same order as the synchronous path; this
+keeps cache traffic comparable in paired sync-versus-async measurements.
+
 Admission is fail-fast when the bounded queue is full; it never waits while
 holding the execution lock. This keeps `resolve()`, `wait_idle()` and `close()`
 able to make progress under backpressure.

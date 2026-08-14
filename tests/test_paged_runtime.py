@@ -286,6 +286,70 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertLessEqual(metrics.peak_staging_in_use, 2)
         self.assertEqual(cache._stage_state, ["free", "free"])
 
+    def test_async_lookahead_matches_sync_demand_and_lru_accounting(self) -> None:
+        sync_cache = self._cache(2)
+        async_cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(async_cache.close)
+        for key in (ExpertKey(0, 0), ExpertKey(0, 2)):
+            sync_cache.get(key)
+            async_cache.get(key)
+
+        sync_before = sync_cache.metrics()
+        async_before = async_cache.metrics()
+        generator = torch.Generator().manual_seed(1808)
+        hidden_states = torch.randn(2, self.hidden_size, generator=generator)
+        top_k_index = torch.tensor([[0, 1], [2, 0]], dtype=torch.long)
+        top_k_weights = torch.rand(2, 2, generator=generator)
+
+        sync_output = PagedExpertRuntime(sync_cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        async_output = PagedExpertRuntime(async_cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        torch.testing.assert_close(async_output, sync_output)
+        sync_after = sync_cache.metrics()
+        async_after = async_cache.metrics()
+        fields = (
+            "requests",
+            "hits",
+            "misses",
+            "evictions",
+            "storage_loads",
+            "transfer_loads",
+            "storage_bytes",
+            "host_to_device_bytes",
+        )
+        for field_name in fields:
+            sync_delta = getattr(sync_after, field_name) - getattr(
+                sync_before, field_name
+            )
+            async_delta = getattr(async_after, field_name) - getattr(
+                async_before, field_name
+            )
+            self.assertEqual(async_delta, sync_delta, field_name)
+        self.assertEqual(
+            (
+                async_after.requests - async_before.requests,
+                async_after.hits - async_before.hits,
+                async_after.misses - async_before.misses,
+                async_after.evictions - async_before.evictions,
+            ),
+            (3, 1, 2, 2),
+        )
+        self.assertEqual(async_cache.resident_keys, sync_cache.resident_keys)
+
     def test_async_pipeline_schedules_future_read_during_current_compute(self) -> None:
         hidden_states = torch.ones(3, self.hidden_size)
         top_k_index = torch.tensor([[0], [1], [2]], dtype=torch.long)
@@ -355,7 +419,7 @@ class PagedRuntimeTests(unittest.TestCase):
         )
         self.addCleanup(cache.close)
         runtime = PagedExpertRuntime(cache)
-        original_submit = cache.submit
+        original_submit = cache._submit_lookahead
         submissions = 0
 
         def fail_third_submit(key):
@@ -365,7 +429,7 @@ class PagedRuntimeTests(unittest.TestCase):
                 raise RuntimeError("injected submit failure")
             return original_submit(key)
 
-        cache.submit = fail_third_submit
+        cache._submit_lookahead = fail_third_submit
         try:
             with self.assertRaisesRegex(RuntimeError, "injected submit failure"):
                 runtime.forward(
@@ -375,7 +439,7 @@ class PagedRuntimeTests(unittest.TestCase):
                     top_k_weights,
                 )
         finally:
-            cache.submit = original_submit
+            cache._submit_lookahead = original_submit
 
         cache.wait_idle()
         self.assertEqual(cache._slot_pin_count, [0])

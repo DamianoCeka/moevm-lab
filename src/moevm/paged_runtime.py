@@ -765,15 +765,17 @@ class ExpertSlotCache:
         self,
         key: ExpertKey,
         slot: int,
+        *,
+        account_request: bool,
     ) -> ExpertLoadTicket:
         ticket = ExpertLoadTicket(
             key=key,
             queued_at=time.perf_counter(),
-            request_clock=self._clock,
+            request_clock=self._clock if account_request else 0,
             destination_slot=slot,
             destination_generation=self._slot_generation[slot],
             state="resident",
-            counted_as_hit=True,
+            counted_as_hit=account_request,
         )
         ticket.storage_done.set()
         ticket.completed.set()
@@ -782,9 +784,19 @@ class ExpertSlotCache:
     def submit(self, key: ExpertKey) -> ExpertLoadTicket:
         """Submit one bounded, coalesced storage load in async mode."""
         with self.execution_lock:
-            return self._submit_locked(key)
+            return self._submit_locked(key, account_request=True)
 
-    def _submit_locked(self, key: ExpertKey) -> ExpertLoadTicket:
+    def _submit_lookahead(self, key: ExpertKey) -> ExpertLoadTicket:
+        """Schedule storage without changing demand or LRU accounting."""
+        with self.execution_lock:
+            return self._submit_locked(key, account_request=False)
+
+    def _submit_locked(
+        self,
+        key: ExpertKey,
+        *,
+        account_request: bool,
+    ) -> ExpertLoadTicket:
         if self.pipeline_mode != "async":
             raise RuntimeError("submit requires pipeline_mode='async'")
         if key not in self.store:
@@ -797,24 +809,32 @@ class ExpertSlotCache:
                 raise RuntimeError("asynchronous expert pipeline failed") from (
                     self._pipeline_error
                 )
-            self._clock += 1
-            self._metrics.requests += 1
+            if account_request:
+                self._clock += 1
+                self._metrics.requests += 1
             existing_slot = self._key_to_slot.get(key)
             if existing_slot is not None:
-                self._last_used[existing_slot] = self._clock
-                self._metrics.hits += 1
-                return self._new_resident_ticket_locked(key, existing_slot)
+                if account_request:
+                    self._last_used[existing_slot] = self._clock
+                    self._metrics.hits += 1
+                return self._new_resident_ticket_locked(
+                    key,
+                    existing_slot,
+                    account_request=account_request,
+                )
             existing_ticket = self._pending_by_key.get(key)
             if existing_ticket is not None:
-                existing_ticket.request_clock = self._clock
-                self._metrics.misses += 1
-                self._metrics.coalesced_requests += 1
+                if account_request:
+                    existing_ticket.request_clock = self._clock
+                    self._metrics.misses += 1
+                    self._metrics.coalesced_requests += 1
                 return existing_ticket
-            self._metrics.misses += 1
+            if account_request:
+                self._metrics.misses += 1
             ticket = ExpertLoadTicket(
                 key=key,
                 queued_at=time.perf_counter(),
-                request_clock=self._clock,
+                request_clock=self._clock if account_request else 0,
             )
             self._pending_by_key[key] = ticket
             self._metrics.pending_loads_peak = max(
@@ -822,7 +842,7 @@ class ExpertSlotCache:
                 len(self._pending_by_key),
             )
 
-        self._enqueue_ticket(ticket, rollback_request=True)
+        self._enqueue_ticket(ticket, rollback_request=account_request)
         return ticket
 
     def _enqueue_ticket(
@@ -1160,13 +1180,28 @@ class ExpertSlotCache:
             self._fail_transfer(ticket, exc)
             self._raise_ticket_error(ticket)
 
+    def _account_demand(self, ticket: ExpertLoadTicket) -> None:
+        with self._condition:
+            self._clock += 1
+            self._metrics.requests += 1
+            ticket.request_clock = self._clock
+            existing_slot = self._key_to_slot.get(ticket.key)
+            if existing_slot is None:
+                self._metrics.misses += 1
+                return
+            self._metrics.hits += 1
+            self._last_used[existing_slot] = self._clock
+
     def _acquire_ticket(
         self,
         ticket: ExpertLoadTicket,
         *,
         compute_stream: Any | None,
         synchronize: bool,
+        account_demand: bool = False,
     ) -> _ExpertLease:
+        if account_demand:
+            self._account_demand(ticket)
         ticket = self._refresh_stale_resident_ticket(ticket)
         self._raise_ticket_error(ticket)
         if ticket.state not in ("resident", "copying"):
@@ -1506,7 +1541,9 @@ class PagedExpertRuntime:
                 initial_depth = min(self.cache.staging_slots, len(expert_ids))
                 while next_to_submit < initial_depth:
                     expert_id = expert_ids[next_to_submit]
-                    tickets[expert_id] = self.cache.submit(ExpertKey(layer, expert_id))
+                    tickets[expert_id] = self.cache._submit_lookahead(
+                        ExpertKey(layer, expert_id)
+                    )
                     next_to_submit += 1
             for expert_id in expert_ids:
                 lease: _ExpertLease | None = None
@@ -1515,6 +1552,7 @@ class PagedExpertRuntime:
                         tickets[expert_id],
                         compute_stream=compute_stream,
                         synchronize=False,
+                        account_demand=True,
                     )
                     weights = lease.weights
                 else:
@@ -1524,7 +1562,7 @@ class PagedExpertRuntime:
                         expert_ids
                     ):
                         next_expert = expert_ids[next_to_submit]
-                        tickets[next_expert] = self.cache.submit(
+                        tickets[next_expert] = self.cache._submit_lookahead(
                             ExpertKey(layer, next_expert)
                         )
                         next_to_submit += 1
