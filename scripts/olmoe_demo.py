@@ -39,6 +39,8 @@ MIN_SLOTS_PER_LAYER = 2
 MAX_SLOTS_PER_LAYER = 32
 MIN_VRAM_RESERVE_BYTES = 2 * 1024**3
 VRAM_RESERVE_FRACTION = 0.20
+CUDA_CAPACITY_ABSOLUTE_TOLERANCE_BYTES = 16 * 1024**2
+CUDA_CAPACITY_RELATIVE_TOLERANCE = 0.02
 DEFAULT_SEED = 17
 
 PASS_NAMES = ("cold_expert_cache", "repeat_retained_expert_cache")
@@ -561,10 +563,12 @@ def validate_benchmark_result(
     observed_total_vram = _integer(
         budget.get("device_total_vram_bytes"), "budget.device_total_vram_bytes"
     )
-    if (
-        abs(observed_total_vram - int(expected_runtime["gpu_total_vram_bytes"]))
-        > 16 * 1024**2
-    ):
+    expected_total_vram = int(expected_runtime["gpu_total_vram_bytes"])
+    capacity_tolerance = max(
+        CUDA_CAPACITY_ABSOLUTE_TOLERANCE_BYTES,
+        int(expected_total_vram * CUDA_CAPACITY_RELATIVE_TOLERANCE),
+    )
+    if abs(observed_total_vram - expected_total_vram) > capacity_tolerance:
         raise DemoError(f"{expected_mode} benchmark CUDA capacity does not match")
     if _integer(
         budget.get("non_expert_checkpoint_bytes"),

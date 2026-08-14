@@ -302,6 +302,40 @@ class PlannerTests(DemoFixture):
 
 
 class ExecutionTests(DemoFixture):
+    def test_validation_accepts_driver_reserved_cuda_capacity(self):
+        class DriverReservedCapacityRunner(FakeRunner):
+            def run(self, argv, *, cwd, env=None):
+                result = super().run(argv, cwd=cwd, env=env)
+                arguments = list(argv)
+                if "--pipeline" in arguments:
+                    output = Path(arguments[arguments.index("--output") + 1])
+                    payload = json.loads(output.read_text(encoding="utf-8"))
+                    payload["runtime"]["budget"]["device_total_vram_bytes"] = int(
+                        12_288 * 1024**2 * 0.987
+                    )
+                    output.write_text(json.dumps(payload), encoding="utf-8")
+                return result
+
+        summary, _path = self.execute(self.config(), DriverReservedCapacityRunner())
+        self.assertEqual(summary["status"], "ok")
+
+    def test_validation_rejects_large_cuda_capacity_mismatch(self):
+        class WrongCapacityRunner(FakeRunner):
+            def run(self, argv, *, cwd, env=None):
+                result = super().run(argv, cwd=cwd, env=env)
+                arguments = list(argv)
+                if "--pipeline" in arguments:
+                    output = Path(arguments[arguments.index("--output") + 1])
+                    payload = json.loads(output.read_text(encoding="utf-8"))
+                    payload["runtime"]["budget"]["device_total_vram_bytes"] = int(
+                        12_288 * 1024**2 * 0.95
+                    )
+                    output.write_text(json.dumps(payload), encoding="utf-8")
+                return result
+
+        with self.assertRaisesRegex(demo.DemoError, "CUDA capacity does not match"):
+            self.execute(self.config(), WrongCapacityRunner())
+
     def test_default_async_uses_argv_list_offline_and_paths_with_spaces(self):
         runner = FakeRunner()
         summary, summary_path = self.execute(self.config(), runner)
