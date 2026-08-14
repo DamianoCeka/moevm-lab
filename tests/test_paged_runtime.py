@@ -137,6 +137,33 @@ class PagedRuntimeTests(unittest.TestCase):
             self.store.spec.size_bytes, (gate.numel() * 2 + down.numel()) * 4
         )
 
+    def test_store_accepts_hugging_face_snapshot_symlink_layout(self) -> None:
+        cache_root = self.snapshot / "hf-cache"
+        blobs = cache_root / "blobs"
+        snapshot = cache_root / "snapshots" / "revision"
+        blobs.mkdir(parents=True)
+        snapshot.mkdir(parents=True)
+
+        filenames = (
+            "model.safetensors.index.json",
+            "model-1.safetensors",
+            "model-2.safetensors",
+        )
+        for index, filename in enumerate(filenames):
+            blob = blobs / f"content-addressed-{index}"
+            blob.write_bytes((self.snapshot / filename).read_bytes())
+            try:
+                (snapshot / filename).symlink_to(blob)
+            except OSError as exc:
+                self.skipTest(f"filesystem symlinks unavailable: {exc}")
+
+        with SafetensorExpertStore(snapshot) as linked_store:
+            loaded = linked_store.load(ExpertKey(0, 1))
+
+        gate, up, down = self.original[ExpertKey(0, 1)]
+        torch.testing.assert_close(loaded.gate_up, torch.cat((gate, up)))
+        torch.testing.assert_close(loaded.down, down)
+
     def test_lru_policy_and_allocations_are_bounded(self) -> None:
         cache = self._cache(2)
         zero = ExpertKey(0, 0)

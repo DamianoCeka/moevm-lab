@@ -33,7 +33,7 @@ import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Self
 
 try:
@@ -115,14 +115,20 @@ class SafetensorExpertStore:
     ) -> None:
         supplied = Path(snapshot_or_index).expanduser()
         if supplied.is_dir():
-            index_path = supplied / "model.safetensors.index.json"
+            snapshot_path = supplied.resolve()
+            index_path = snapshot_path / "model.safetensors.index.json"
         else:
-            index_path = supplied
+            snapshot_path = supplied.parent.resolve()
+            index_path = snapshot_path / supplied.name
         if not index_path.is_file():
             raise FileNotFoundError(f"safetensors index not found: {index_path}")
 
-        self.index_path = index_path.resolve()
-        self.snapshot_path = self.index_path.parent
+        # Hugging Face's canonical cache stores snapshot entries as symlinks to
+        # content-addressed files in a sibling ``blobs`` directory. Preserve
+        # the lexical snapshot directory instead of deriving it from the
+        # resolved index symlink target.
+        self.index_path = index_path
+        self.snapshot_path = snapshot_path
         payload = json.loads(self.index_path.read_text(encoding="utf-8"))
         weight_map = payload.get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
@@ -166,7 +172,7 @@ class SafetensorExpertStore:
         self._handles: dict[Path, Any] = {}
         try:
             for shard_name in sorted(set(self._weight_map.values())):
-                shard_path = (self.snapshot_path / shard_name).resolve()
+                shard_path = self._resolve_shard_path(shard_name)
                 handle = safe_open(shard_path, framework="pt", device="cpu")
                 handle.__enter__()
                 self._handles[shard_path] = handle
@@ -180,22 +186,36 @@ class SafetensorExpertStore:
             shard_name = self._weight_map[tensor_name]
         except KeyError as exc:
             raise KeyError(f"tensor not present in index: {tensor_name}") from exc
-        shard_path = (self.snapshot_path / shard_name).resolve()
-        if not shard_path.is_relative_to(self.snapshot_path):
+        return self._resolve_shard_path(shard_name)
+
+    def _resolve_shard_path(self, shard_name: str) -> Path:
+        posix_path = PurePosixPath(shard_name)
+        windows_path = PureWindowsPath(shard_name)
+        if (
+            posix_path.is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
+            or "\\" in shard_name
+            or any(part in ("", ".", "..") for part in posix_path.parts)
+        ):
             raise ValueError(
                 f"safetensors shard escapes snapshot directory: {shard_name}"
             )
-        return shard_path
+
+        lexical_path = self.snapshot_path.joinpath(*posix_path.parts)
+        resolved_parent = lexical_path.parent.resolve()
+        if not resolved_parent.is_relative_to(self.snapshot_path):
+            raise ValueError(
+                f"safetensors shard escapes snapshot directory: {shard_name}"
+            )
+        resolved_path = lexical_path.resolve()
+        if not resolved_path.is_file():
+            raise FileNotFoundError(f"safetensors shard not found: {resolved_path}")
+        return resolved_path
 
     def _validate_shard_paths(self) -> None:
         for shard_name in sorted(set(self._weight_map.values())):
-            shard_path = (self.snapshot_path / shard_name).resolve()
-            if not shard_path.is_relative_to(self.snapshot_path):
-                raise ValueError(
-                    f"safetensors shard escapes snapshot directory: {shard_name}"
-                )
-            if not shard_path.is_file():
-                raise FileNotFoundError(f"safetensors shard not found: {shard_path}")
+            self._resolve_shard_path(shard_name)
 
     @staticmethod
     def _torch_dtype(safetensors_dtype: str) -> torch.dtype:
