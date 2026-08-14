@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 try:
     import torch
@@ -82,6 +83,11 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(args.max_new_tokens, 2)
         self.assertIsNone(args.prompt)
         self.assertFalse(args.teacher_force_reference)
+        self.assertFalse(args.demo_mode)
+
+        demo_args = self._args("--demo-mode")
+        _HARNESS._validate_args(demo_args)
+        self.assertTrue(demo_args.demo_mode)
 
         long_args = self._args("--max-new-tokens", "64")
         _HARNESS._validate_args(long_args)
@@ -314,13 +320,44 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
     def test_source_provenance_binds_commit_and_script_hash(self) -> None:
         source = _HARNESS._source_provenance()
+        demo_source = _HARNESS._source_provenance(best_effort=True)
 
         self.assertRegex(str(source["commit"]), r"^[0-9a-f]{40}$")
         self.assertIsInstance(source["tree_clean"], bool)
+        self.assertEqual(source["provenance_mode"], "benchmark_evidence")
         self.assertEqual(source["benchmark_script"], "scripts/benchmark_paged_olmoe.py")
         self.assertEqual(
             source["benchmark_script_sha256"],
             hashlib.sha256(_SCRIPT.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            source["paged_runtime_sha256"],
+            hashlib.sha256(
+                (_SCRIPT.parents[1] / "src" / "moevm" / "paged_runtime.py").read_bytes()
+            ).hexdigest(),
+        )
+        self.assertRegex(str(demo_source["commit"]), r"^[0-9a-f]{40}$")
+        self.assertIsNone(demo_source["tree_clean"])
+        self.assertIsInstance(demo_source["git_tree_clean_observed"], bool)
+        self.assertEqual(demo_source["provenance_mode"], "demo")
+
+    def test_demo_provenance_is_best_effort_without_git(self) -> None:
+        with mock.patch.object(
+            _HARNESS.subprocess,
+            "run",
+            side_effect=FileNotFoundError("git is unavailable"),
+        ):
+            source = _HARNESS._source_provenance(best_effort=True)
+            with self.assertRaisesRegex(RuntimeError, "Git provenance is required"):
+                _HARNESS._source_provenance()
+
+        self.assertIsNone(source["commit"])
+        self.assertIsNone(source["tree_clean"])
+        self.assertFalse(source["git_available"])
+        self.assertEqual(source["provenance_mode"], "demo")
+        self.assertEqual(
+            source["benchmark_script"],
+            _SCRIPT.relative_to(_SCRIPT.parents[1]).as_posix(),
         )
 
     @unittest.skipUnless(torch is not None, "requires torch for manual decode contract")

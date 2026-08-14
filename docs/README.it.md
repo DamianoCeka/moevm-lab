@@ -68,6 +68,23 @@ temporale H2D/kernel. [Dati, grafico e limiti](../benchmarks/reference/paged-run
 
 ## Avvio rapido
 
+La demo sul modello OLMoE reale si avvia con un solo comando su Windows:
+
+```powershell
+.\demo.cmd
+```
+
+Il comando rileva GPU, VRAM, RAM e cache; prepara un ambiente Python isolato,
+scarica solo se necessario la revisione fissata del modello, verifica gli hash,
+sceglie automaticamente una cache GPU sicura e mostra tempo, token/s, picco
+VRAM e working set del processo. La modalità predefinita usa il percorso async;
+`.\demo.cmd -Compare` aggiunge il confronto locale sync/async. Il primo avvio
+può richiedere circa 13 GiB di modello e alcuni GiB di dipendenze. È una demo
+hardware fino a due token, non un benchmark generale. Dettagli e limiti sono in
+[Demo OLMoE con un comando](ONE_COMMAND_DEMO.md).
+
+La simulazione senza modello/GPU resta disponibile con:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 ```

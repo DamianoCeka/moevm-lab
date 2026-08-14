@@ -43,6 +43,7 @@ NON_NEGATIVE_TIME_FIELDS = (
 MAX_EXTRA_ASYNC_PEAK_VRAM_BYTES = 64 * 1024 * 1024
 RUNTIME_IDENTITY_FIELDS = (
     "device",
+    "device_uuid",
     "device_name",
     "policy",
     "capacity_scope",
@@ -205,7 +206,13 @@ def _pass_metric_scopes(
 def _validate_mode(payload: dict[str, Any], mode: str) -> dict[str, Any]:
     if payload.get("status") != "ok" or payload.get("schema_version") != 1:
         raise ValueError(f"{mode}: expected status=ok and schema_version=1")
+    evidence = _mapping(payload.get("evidence"), f"{mode}.evidence")
+    publishable = evidence.get("publishable_benchmark_evidence")
+    if publishable is not None and publishable is not True:
+        raise ValueError(f"{mode}: demo output is not benchmark evidence")
     source = _mapping(payload.get("source"), f"{mode}.source")
+    if source.get("provenance_mode") == "demo":
+        raise ValueError(f"{mode}: demo provenance is not benchmark evidence")
     if source.get("tree_clean") is not True:
         raise ValueError(f"{mode}: benchmark source must be a clean Git tree")
     commit = source.get("commit")

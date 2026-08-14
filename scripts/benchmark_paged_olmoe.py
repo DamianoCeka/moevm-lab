@@ -24,24 +24,13 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-PINNED_MODEL_ID = "allenai/OLMoE-1B-7B-0924"
-PINNED_REVISION = "bd1c52f59153f724c1ad11ca1791edc77bab3806"
-PINNED_SHARD_SHA256 = {
-    "model-00001-of-00003.safetensors": (
-        "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e"
-    ),
-    "model-00002-of-00003.safetensors": (
-        "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7"
-    ),
-    "model-00003-of-00003.safetensors": (
-        "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
-    ),
-}
-PINNED_SHARD_SIZES = {
-    "model-00001-of-00003.safetensors": 4_997_744_872,
-    "model-00002-of-00003.safetensors": 4_997_235_176,
-    "model-00003-of-00003.safetensors": 3_843_741_912,
-}
+from moevm.olmoe_assets import (
+    PINNED_MODEL_ID,
+    PINNED_REVISION,
+    PINNED_SHARD_SHA256,
+    PINNED_SHARD_SIZES,
+)
+
 _HASH_BLOCK_BYTES = 16 * 1024 * 1024
 _VRAM_SAFETY_MARGIN_BYTES = int(1.25 * 1024**3)
 _DEFAULT_PROMPT = "Explain sparse mixture-of-experts in one short sentence."
@@ -100,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Local snapshot directory named {PINNED_REVISION}; no download occurs.",
     )
     parser.add_argument("--output", required=True, help="Create-only JSON result path.")
+    parser.add_argument(
+        "--demo-mode",
+        action="store_true",
+        help=(
+            "allow best-effort Git provenance for an interactive local demo; "
+            "the result is explicitly not publishable benchmark evidence"
+        ),
+    )
     parser.add_argument(
         "--prompt",
         default=None,
@@ -789,7 +786,7 @@ def _package_versions() -> dict[str, str]:
     return {name: importlib.metadata.version(name) for name in packages}
 
 
-def _source_provenance() -> dict[str, str | bool]:
+def _source_provenance(*, best_effort: bool = False) -> dict[str, str | bool | None]:
     def git(*arguments: str) -> str:
         completed = subprocess.run(
             ("git", *arguments),
@@ -800,18 +797,42 @@ def _source_provenance() -> dict[str, str | bool]:
         )
         return completed.stdout.strip()
 
-    commit = git("rev-parse", "HEAD")
+    script_path = Path(__file__).resolve()
+    script_fields = {
+        "benchmark_script": script_path.relative_to(_REPO_ROOT).as_posix(),
+        "benchmark_script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
+        "paged_runtime_sha256": hashlib.sha256(
+            (_SRC / "moevm" / "paged_runtime.py").read_bytes()
+        ).hexdigest(),
+    }
+    try:
+        commit = git("rev-parse", "HEAD")
+        status = git("status", "--porcelain", "--untracked-files=all")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        if not best_effort:
+            raise RuntimeError(
+                "Git provenance is required for benchmark evidence"
+            ) from exc
+        return {
+            "commit": None,
+            "tree_clean": None,
+            "git_available": False,
+            "git_tree_clean_observed": None,
+            "provenance_mode": "demo",
+            **script_fields,
+        }
     if len(commit) != 40 or any(
         character not in "0123456789abcdef" for character in commit
     ):
         raise RuntimeError("Git returned an invalid source commit")
-    status = git("status", "--porcelain", "--untracked-files=all")
-    script_path = Path(__file__).resolve()
+    observed_clean = not bool(status)
     return {
         "commit": commit,
-        "tree_clean": not bool(status),
-        "benchmark_script": script_path.relative_to(_REPO_ROOT).as_posix(),
-        "benchmark_script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
+        "tree_clean": None if best_effort else observed_clean,
+        "git_available": True,
+        "git_tree_clean_observed": observed_clean,
+        "provenance_mode": "demo" if best_effort else "benchmark_evidence",
+        **script_fields,
     }
 
 
@@ -866,8 +887,8 @@ def _write_json_create_only(path: Path, payload: object) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     _validate_args(args)
-    source = _source_provenance()
-    if not source["tree_clean"]:
+    source = _source_provenance(best_effort=args.demo_mode)
+    if source["tree_clean"] is not True and not args.demo_mode:
         raise RuntimeError("benchmark evidence requires a clean Git working tree")
     prompt = _resolve_prompt(args)
     snapshot = _validate_snapshot(Path(args.snapshot))
@@ -1191,11 +1212,21 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "created_at": datetime.now(UTC).isoformat(),
                 "evidence": {
                     "label": (
-                        "single-workload controlled paged-runtime smoke; "
+                        "interactive local hardware demo; not benchmark evidence"
+                        if args.demo_mode
+                        else "single-workload controlled paged-runtime smoke; "
                         "not a general throughput claim"
                     ),
+                    "publishable_benchmark_evidence": not args.demo_mode,
                     "offline_local_only": True,
                     "limitations": [
+                        *(
+                            [
+                                "Demo mode permits best-effort Git provenance and must not be published as benchmark evidence."
+                            ]
+                            if args.demo_mode
+                            else []
+                        ),
                         "SHA-256 verification is intentionally after timed passes to avoid warming every shard first.",
                         "Model loading and mmap page faults still make OS page-cache state uncontrolled.",
                         "Cold means an empty dynamic expert cache, not a cold NVMe or OS cache.",
@@ -1230,6 +1261,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "runtime": {
                     "device": str(device),
                     "device_name": torch.cuda.get_device_name(),
+                    "device_uuid": str(
+                        torch.cuda.get_device_properties(device).uuid
+                    ).lower(),
                     "policy": args.policy,
                     "pipeline": args.pipeline,
                     "capacity_scope": "independent per-layer partitions",
