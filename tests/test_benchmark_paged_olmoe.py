@@ -76,6 +76,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
         self.assertEqual(args.device, "cuda:0")
         self.assertEqual(args.policy, "lru")
+        self.assertEqual(args.pipeline, "sync")
         self.assertEqual(args.slots_per_layer, 32)
         self.assertEqual(args.staging_slots, 1)
         self.assertEqual(args.max_new_tokens, 2)
@@ -100,6 +101,16 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             _HARNESS._validate_args(self._args("--device", "cpu"))
         with self.assertRaisesRegex(ValueError, "requires --reference-metadata"):
             _HARNESS._validate_args(self._args("--teacher-force-reference"))
+        with self.assertRaisesRegex(ValueError, "at least two staging slots"):
+            _HARNESS._validate_args(self._args("--pipeline", "async"))
+        async_args = self._args(
+            "--pipeline",
+            "async",
+            "--staging-slots",
+            "2",
+        )
+        _HARNESS._validate_args(async_args)
+        self.assertEqual(async_args.pipeline, "async")
 
     def test_workload_file_selects_exact_prompt(self) -> None:
         workload_path = self.root / "workloads.json"
@@ -231,6 +242,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             evictions=2,
             storage_bytes=72,
             host_to_device_bytes=72,
+            storage_loads=6,
+            transfer_loads=6,
+            pending_loads_peak=1,
+            peak_staging_in_use=1,
             storage_seconds=1.0,
             transfer_seconds=2.0,
             forward_seconds=4.0,
@@ -242,6 +257,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             evictions=3,
             storage_bytes=84,
             host_to_device_bytes=84,
+            storage_loads=7,
+            transfer_loads=7,
+            pending_loads_peak=2,
+            peak_staging_in_use=2,
             storage_seconds=1.5,
             transfer_seconds=2.25,
             forward_seconds=5.0,
@@ -254,9 +273,27 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(delta["hits"], 3)
         self.assertEqual(delta["misses"], 1)
         self.assertEqual(delta["hit_rate"], 0.75)
+        self.assertNotIn("pending_loads_peak", delta)
+        self.assertNotIn("peak_staging_in_use", delta)
         delta["storage_bytes"] = 13
         with self.assertRaisesRegex(RuntimeError, "storage bytes"):
             _HARNESS._validate_metric_delta(delta, expert_bytes=12)
+
+        coalesced = {
+            "requests": 2,
+            "hits": 0,
+            "misses": 2,
+            "evictions": 0,
+            "storage_bytes": 12,
+            "host_to_device_bytes": 12,
+            "storage_loads": 1,
+            "transfer_loads": 1,
+            "coalesced_requests": 1,
+            "storage_seconds": 0.1,
+            "transfer_seconds": 0.1,
+            "forward_seconds": 0.1,
+        }
+        _HARNESS._validate_metric_delta(coalesced, expert_bytes=12)
 
     def test_percentile_ratio_and_create_only_json(self) -> None:
         self.assertIsNone(_HARNESS._ratio(1.0, 0.0))
@@ -274,6 +311,17 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertTrue(_HARNESS._is_cuda_oom(RuntimeError("CUDA out of memory")))
         self.assertFalse(_HARNESS._is_cuda_oom(RuntimeError("CPU out of memory")))
         self.assertFalse(_HARNESS._is_cuda_oom(ValueError("bad input")))
+
+    def test_source_provenance_binds_commit_and_script_hash(self) -> None:
+        source = _HARNESS._source_provenance()
+
+        self.assertRegex(str(source["commit"]), r"^[0-9a-f]{40}$")
+        self.assertIsInstance(source["tree_clean"], bool)
+        self.assertEqual(source["benchmark_script"], "scripts/benchmark_paged_olmoe.py")
+        self.assertEqual(
+            source["benchmark_script_sha256"],
+            hashlib.sha256(_SCRIPT.read_bytes()).hexdigest(),
+        )
 
     @unittest.skipUnless(torch is not None, "requires torch for manual decode contract")
     def test_manual_two_token_decode_uses_fresh_kv_and_extended_mask(self) -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -84,6 +86,8 @@ class PagedRuntimeTests(unittest.TestCase):
         policy: CachePolicy | str = "lru",
         static_keys: tuple[ExpertKey, ...] = (),
         device: str = "cpu",
+        staging_slots: int = 1,
+        pipeline_mode: str = "sync",
     ) -> ExpertSlotCache:
         return ExpertSlotCache(
             self.store,
@@ -91,8 +95,9 @@ class PagedRuntimeTests(unittest.TestCase):
             device=device,
             policy=policy,
             static_keys=static_keys,
-            staging_slots=1,
+            staging_slots=staging_slots,
             pin_staging=device == "cuda",
+            pipeline_mode=pipeline_mode,
         )
 
     def _reference_forward(
@@ -196,6 +201,431 @@ class PagedRuntimeTests(unittest.TestCase):
         cache.get(one)
         self.assertEqual(cache.resident_keys, (one,))
         self.assertEqual(cache.metrics().evictions, 1)
+
+    def test_async_cpu_coalesces_load_and_keeps_metrics_after_close(self) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+        original_load_into = self.store.load_into
+        load_count = 0
+        load_lock = threading.Lock()
+
+        def counted_load(*args, **kwargs):
+            nonlocal load_count
+            with load_lock:
+                load_count += 1
+            return original_load_into(*args, **kwargs)
+
+        self.store.load_into = counted_load
+        try:
+            first = cache.submit(key)
+            second = cache.submit(key)
+            self.assertIs(first, second)
+            loaded = cache.resolve(first)
+        finally:
+            self.store.load_into = original_load_into
+
+        gate, up, down = self.original[key]
+        torch.testing.assert_close(loaded.gate_up, torch.cat((gate, up)))
+        torch.testing.assert_close(loaded.down, down)
+        self.assertEqual(load_count, 1)
+        cache.wait_idle()
+        cache.close()
+        cache.close()
+        metrics = cache.metrics()
+        self.assertEqual(metrics.requests, 2)
+        self.assertEqual(metrics.hits, 0)
+        self.assertEqual(metrics.misses, 2)
+        self.assertEqual(metrics.coalesced_requests, 1)
+        self.assertEqual(metrics.storage_loads, 1)
+        self.assertEqual(metrics.transfer_loads, 1)
+        self.assertEqual(metrics.storage_failures, 0)
+        self.assertEqual(metrics.storage_bytes, self.store.spec.size_bytes)
+        self.assertLessEqual(metrics.peak_staging_in_use, 2)
+        self.assertEqual(
+            self.store.load(key).gate_up.shape, self.store.spec.gate_up_shape
+        )
+
+    def test_async_cpu_forward_is_bounded_and_matches_reference(self) -> None:
+        generator = torch.Generator().manual_seed(808)
+        hidden_states = torch.randn(5, self.hidden_size, generator=generator)
+        top_k_index = torch.tensor(
+            [[0, 1], [2, 1], [3, 0], [1, 3], [2, 0]], dtype=torch.long
+        )
+        top_k_weights = torch.rand(5, 2, generator=generator)
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        actual = runtime.forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        torch.testing.assert_close(actual, expected)
+        cache.wait_idle()
+        metrics = cache.metrics()
+        self.assertEqual(metrics.requests, 4)
+        self.assertEqual(metrics.misses, 4)
+        self.assertLessEqual(metrics.pending_loads_peak, 2)
+        self.assertLessEqual(metrics.peak_staging_in_use, 2)
+        self.assertEqual(cache._stage_state, ["free", "free"])
+
+    def test_async_lookahead_matches_sync_demand_and_lru_accounting(self) -> None:
+        sync_cache = self._cache(2)
+        async_cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(async_cache.close)
+        for key in (ExpertKey(0, 0), ExpertKey(0, 2)):
+            sync_cache.get(key)
+            async_cache.get(key)
+
+        sync_before = sync_cache.metrics()
+        async_before = async_cache.metrics()
+        generator = torch.Generator().manual_seed(1808)
+        hidden_states = torch.randn(2, self.hidden_size, generator=generator)
+        top_k_index = torch.tensor([[0, 1], [2, 0]], dtype=torch.long)
+        top_k_weights = torch.rand(2, 2, generator=generator)
+
+        sync_output = PagedExpertRuntime(sync_cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        async_output = PagedExpertRuntime(async_cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        torch.testing.assert_close(async_output, sync_output)
+        sync_after = sync_cache.metrics()
+        async_after = async_cache.metrics()
+        fields = (
+            "requests",
+            "hits",
+            "misses",
+            "evictions",
+            "storage_loads",
+            "transfer_loads",
+            "storage_bytes",
+            "host_to_device_bytes",
+        )
+        for field_name in fields:
+            sync_delta = getattr(sync_after, field_name) - getattr(
+                sync_before, field_name
+            )
+            async_delta = getattr(async_after, field_name) - getattr(
+                async_before, field_name
+            )
+            self.assertEqual(async_delta, sync_delta, field_name)
+        self.assertEqual(
+            (
+                async_after.requests - async_before.requests,
+                async_after.hits - async_before.hits,
+                async_after.misses - async_before.misses,
+                async_after.evictions - async_before.evictions,
+            ),
+            (3, 1, 2, 2),
+        )
+        self.assertEqual(async_cache.resident_keys, sync_cache.resident_keys)
+
+    def test_async_pipeline_schedules_future_read_during_current_compute(self) -> None:
+        hidden_states = torch.ones(3, self.hidden_size)
+        top_k_index = torch.tensor([[0], [1], [2]], dtype=torch.long)
+        top_k_weights = torch.ones(3, 1)
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        compute_started = threading.Event()
+        future_read_started = threading.Event()
+        original_load_into = self.store.load_into
+        original_linear = torch_functional.linear
+        linear_calls = 0
+
+        def coordinated_load(key, *args, **kwargs):
+            if key == ExpertKey(0, 2):
+                future_read_started.set()
+                if not compute_started.wait(timeout=2):
+                    raise AssertionError(
+                        "compute did not start while the future read was active"
+                    )
+            return original_load_into(key, *args, **kwargs)
+
+        def coordinated_linear(*args, **kwargs):
+            nonlocal linear_calls
+            linear_calls += 1
+            if linear_calls == 1:
+                compute_started.set()
+                if not future_read_started.wait(timeout=2):
+                    raise AssertionError("future read did not overlap scheduling")
+            return original_linear(*args, **kwargs)
+
+        self.store.load_into = coordinated_load
+        torch_functional.linear = coordinated_linear
+        try:
+            actual = runtime.forward(
+                0,
+                hidden_states,
+                top_k_index,
+                top_k_weights,
+            )
+        finally:
+            torch_functional.linear = original_linear
+            self.store.load_into = original_load_into
+
+        torch.testing.assert_close(actual, expected)
+        self.assertTrue(compute_started.is_set())
+        self.assertTrue(future_read_started.is_set())
+
+    def test_async_forward_releases_lease_when_next_submit_fails(self) -> None:
+        hidden_states = torch.ones(2, self.hidden_size)
+        top_k_index = torch.tensor([[0, 1], [2, 0]], dtype=torch.long)
+        top_k_weights = torch.ones(2, 2)
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        original_submit = cache._submit_lookahead
+        submissions = 0
+
+        def fail_third_submit(key):
+            nonlocal submissions
+            submissions += 1
+            if submissions == 3:
+                raise RuntimeError("injected submit failure")
+            return original_submit(key)
+
+        cache._submit_lookahead = fail_third_submit
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected submit failure"):
+                runtime.forward(
+                    0,
+                    hidden_states,
+                    top_k_index,
+                    top_k_weights,
+                )
+        finally:
+            cache._submit_lookahead = original_submit
+
+        cache.wait_idle()
+        self.assertEqual(cache._slot_pin_count, [0])
+        self.assertEqual(cache._pending_by_key, {})
+
+    def test_async_stale_resident_ticket_reloads_without_pinning_deadlock(self) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        zero = ExpertKey(0, 0)
+        one = ExpertKey(0, 1)
+        cache.get(one)
+
+        missing = cache.submit(zero)
+        future_hit = cache.submit(one)
+        cache.resolve(missing)
+        loaded = cache.resolve(future_hit)
+
+        gate, up, down = self.original[one]
+        torch.testing.assert_close(loaded.gate_up, torch.cat((gate, up)))
+        torch.testing.assert_close(loaded.down, down)
+        self.assertEqual(cache.resident_keys, (one,))
+        metrics = cache.metrics()
+        self.assertEqual(metrics.requests, 3)
+        self.assertEqual(metrics.hits, 0)
+        self.assertEqual(metrics.misses, 3)
+        self.assertEqual(metrics.storage_bytes, 3 * self.store.spec.size_bytes)
+        self.assertEqual(metrics.storage_loads, 3)
+
+    def test_async_stale_ticket_cannot_requeue_after_close(self) -> None:
+        cache = self._cache(1, pipeline_mode="async")
+        zero = ExpertKey(0, 0)
+        one = ExpertKey(0, 1)
+        cache.get(zero)
+        stale = cache.submit(zero)
+        cache.get(one)
+        cache.close()
+
+        with self.assertRaisesRegex(RuntimeError, "expert slot cache is closed"):
+            cache.resolve(stale)
+        self.assertEqual(cache._pending_by_key, {})
+
+    def test_async_storage_failure_preserves_previous_victim(self) -> None:
+        cache = self._cache(1, pipeline_mode="async")
+        self.addCleanup(cache.close)
+        zero = ExpertKey(0, 0)
+        one = ExpertKey(0, 1)
+        cache.get(zero)
+        original_load_into = self.store.load_into
+
+        def fail_read(*_args, **_kwargs):
+            raise OSError("injected async read failure")
+
+        self.store.load_into = fail_read
+        try:
+            with self.assertRaisesRegex(OSError, "injected async read failure"):
+                cache.get(one)
+        finally:
+            self.store.load_into = original_load_into
+
+        self.assertEqual(cache.resident_keys, (zero,))
+        cache.get(zero)
+        metrics = cache.metrics()
+        self.assertEqual(metrics.storage_failures, 1)
+        self.assertEqual(metrics.hits, 1)
+
+    def test_async_wait_idle_reports_unobserved_storage_failure(self) -> None:
+        cache = self._cache(1, pipeline_mode="async")
+        self.addCleanup(cache.close)
+        original_load_into = self.store.load_into
+
+        def fail_read(*_args, **_kwargs):
+            raise OSError("unobserved async read failure")
+
+        self.store.load_into = fail_read
+        try:
+            ticket = cache.submit(ExpertKey(0, 0))
+            self.assertTrue(ticket.completed.wait(timeout=2))
+        finally:
+            self.store.load_into = original_load_into
+
+        with self.assertRaisesRegex(OSError, "unobserved async read failure"):
+            cache.wait_idle()
+        cache.close()
+
+    def test_async_transfer_failure_leaves_slot_empty_and_recovers(self) -> None:
+        cache = self._cache(1, pipeline_mode="async")
+        self.addCleanup(cache.close)
+        zero = ExpertKey(0, 0)
+        one = ExpertKey(0, 1)
+        cache.get(zero)
+        original_copy = cache._copy_staging_to_slot
+
+        def fail_copy(*_args, **_kwargs):
+            raise RuntimeError("injected async transfer failure")
+
+        cache._copy_staging_to_slot = fail_copy
+        try:
+            with self.assertRaisesRegex(
+                RuntimeError, "injected async transfer failure"
+            ):
+                cache.get(one)
+        finally:
+            cache._copy_staging_to_slot = original_copy
+
+        self.assertEqual(cache.resident_keys, ())
+        cache.get(one)
+        self.assertEqual(cache.resident_keys, (one,))
+        metrics = cache.metrics()
+        self.assertEqual(metrics.evictions, 1)
+        self.assertEqual(metrics.transfer_failures, 1)
+
+    def test_async_close_waits_for_inflight_storage(self) -> None:
+        cache = self._cache(1, pipeline_mode="async")
+        key = ExpertKey(0, 0)
+        original_load_into = self.store.load_into
+        entered = threading.Event()
+        release = threading.Event()
+        close_errors: list[Exception] = []
+
+        def blocked_load(*args, **kwargs):
+            entered.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release storage worker")
+            return original_load_into(*args, **kwargs)
+
+        self.store.load_into = blocked_load
+        try:
+            cache.submit(key)
+            self.assertTrue(entered.wait(timeout=2))
+
+            def close_cache() -> None:
+                try:
+                    cache.close()
+                except Exception as exc:  # noqa: BLE001 - capture thread result
+                    close_errors.append(exc)
+
+            closer = threading.Thread(target=close_cache)
+            closer.start()
+            time.sleep(0.02)
+            self.assertTrue(closer.is_alive())
+            release.set()
+            closer.join(timeout=5)
+            self.assertFalse(closer.is_alive())
+        finally:
+            release.set()
+            self.store.load_into = original_load_into
+            cache.close()
+
+        self.assertEqual(close_errors, [])
+        self.assertEqual(cache.resident_keys, (key,))
+        self.assertEqual(cache.metrics().storage_failures, 0)
+
+    def test_async_queue_full_rejects_without_holding_execution_lock(self) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        first = cache.submit(ExpertKey(0, 0))
+        self.assertTrue(first.storage_done.wait(timeout=2))
+        second = cache.submit(ExpertKey(0, 1))
+
+        deadline = time.monotonic() + 2
+        while cache._jobs.qsize() != 0 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(cache._jobs.qsize(), 0)
+        third = cache.submit(ExpertKey(0, 2))
+
+        started = time.perf_counter()
+        with self.assertRaisesRegex(RuntimeError, "queue is full"):
+            cache.submit(ExpertKey(0, 3))
+        self.assertLess(time.perf_counter() - started, 0.5)
+
+        cache.resolve(first)
+        cache.wait_idle()
+        self.assertTrue(second.completed.is_set())
+        self.assertTrue(third.completed.is_set())
+        metrics = cache.metrics()
+        self.assertEqual(metrics.requests, 3)
+        self.assertEqual(metrics.misses, 3)
+        self.assertEqual(metrics.admission_rejections, 1)
 
     def test_static_policy_preserves_static_expert(self) -> None:
         zero = ExpertKey(0, 0)
@@ -586,6 +1016,62 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(hit_metrics.hits, 1)
         self.assertEqual(hit_metrics.misses, 3)
         self.assertEqual(hit_metrics.evictions, 1)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_forward_uses_events_and_reuses_staging(self) -> None:
+        device = "cuda"
+        generator = torch.Generator().manual_seed(919)
+        hidden_states = torch.randn(3, self.hidden_size, generator=generator).to(device)
+        top_k_index = torch.tensor([[0, 1], [2, 1], [0, 2]], device=device)
+        top_k_weights = torch.rand(3, 2, generator=generator).to(device)
+        cache = self._cache(
+            1,
+            device=device,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        torch.cuda.current_stream().synchronize()
+        original_synchronize = torch.cuda.synchronize
+
+        def reject_global_synchronize(*_args, **_kwargs):
+            raise AssertionError("async forward used a global CUDA synchronize")
+
+        torch.cuda.synchronize = reject_global_synchronize
+        try:
+            actual = runtime.forward(
+                0,
+                hidden_states,
+                top_k_index,
+                top_k_weights,
+            )
+        finally:
+            torch.cuda.synchronize = original_synchronize
+
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        cache.wait_idle()
+        metrics = cache.metrics()
+        self.assertEqual(metrics.misses, 3)
+        self.assertEqual(metrics.evictions, 2)
+        self.assertEqual(
+            metrics.host_to_device_bytes,
+            3 * self.store.spec.size_bytes,
+        )
+        self.assertLessEqual(metrics.peak_staging_in_use, 2)
+        self.assertEqual(cache._stage_state, ["free", "free"])
+        self.assertTrue(any(event is not None for event in cache._slot_last_use_event))
+        with self.assertRaisesRegex(RuntimeError, "raw CUDA weights are unsafe"):
+            cache.get(ExpertKey(0, 0))
 
 
 if __name__ == "__main__":

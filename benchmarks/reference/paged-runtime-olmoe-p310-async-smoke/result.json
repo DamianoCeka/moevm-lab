@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "evidence_label": "three-pair controlled sync-versus-async paged-runtime smoke",
+  "measured_at": "2026-08-14",
+  "source": {
+    "commit": "91dece79272dee3ad56352fca4e9081637b473a9",
+    "tree_clean": true,
+    "benchmark_script": "scripts/benchmark_paged_olmoe.py",
+    "benchmark_script_sha256": "5bf33d69362389b8f4602377bca97b7765c384741fbc4237f99d2eed0c49f110",
+    "pair_comparator": "scripts/compare_paged_pipeline_pair.py",
+    "pair_comparator_sha256": "5c2aca43d08ee728a59c31d90b7fdea29783fb7692ad333a01815f1a6f91dc84"
+  },
+  "model": {
+    "id": "allenai/OLMoE-1B-7B-0924",
+    "revision": "bd1c52f59153f724c1ad11ca1791edc77bab3806",
+    "dtype": "bfloat16",
+    "layers": 16,
+    "experts_per_layer": 64,
+    "top_k": 8,
+    "expert_bytes": 12582912,
+    "checkpoint_shards_sha256": {
+      "model-00001-of-00003.safetensors": "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e",
+      "model-00002-of-00003.safetensors": "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7",
+      "model-00003-of-00003.safetensors": "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
+    }
+  },
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 3080 Ti",
+    "platform": "Windows 11",
+    "python": "3.12.8",
+    "torch": "2.12.1+cu130",
+    "transformers": "5.14.1",
+    "accelerate": "1.14.0",
+    "safetensors": "0.8.0"
+  },
+  "workload": {
+    "id": "python_code",
+    "prompt_sha256": "458b7f62a19be4225c0c63de7408dec36fe112316d0e87a4e246416343be5d48",
+    "workload_file_sha256": "2cc5bb1f44ecca9fccbe22869080edbdec215f55130528f7dcfb6f4e265eec44",
+    "input_tokens": 21,
+    "generated_tokens": 2,
+    "generation_equivalent_decode_tokens": 1,
+    "decoding": "teacher-forced reference with greedy predictions",
+    "reference_token_ids": [
+      187,
+      187
+    ],
+    "reference_metadata_sha256": "ecb6475d0b84afaf9ec0113eccb61bb9d307f755179d2fa3750a3fc8b6b35647",
+    "temperature": 0.0,
+    "seed": 17
+  },
+  "protocol": {
+    "paired_repetitions": 3,
+    "alternating_order": [
+      "async-sync",
+      "sync-async",
+      "async-sync"
+    ],
+    "policy": "lru",
+    "slots_per_layer": 32,
+    "expert_cache_bytes": 6442450944,
+    "staging_slots": 2,
+    "staging_host_bytes": 25165824,
+    "device": "cuda:0",
+    "dynamic_cache_conditions": [
+      "empty",
+      "retained"
+    ],
+    "os_page_cache": "uncontrolled and expected warm after prior local runs",
+    "pair_gate": "exact source, environment, model, workload, token and per-scope cache/transfer/failure-counter equality"
+  },
+  "correctness": {
+    "all_pair_gates_passed": true,
+    "pair_gates_passed": 3,
+    "cross_repetition_identity_exact": true,
+    "generated_and_fed_token_ids_exact": true,
+    "generated_token_ids": [
+      187,
+      187
+    ],
+    "fed_token_ids": [
+      187,
+      187
+    ],
+    "cache_and_transfer_primitives_exact": true,
+    "all_admission_rejections_zero": true,
+    "all_storage_failures_zero": true,
+    "all_transfer_failures_zero": true,
+    "all_coalesced_requests_zero": true,
+    "peak_allocated_vram_equal_between_modes": true,
+    "peak_allocated_vram_bytes": 7407888896
+  },
+  "conditions": {
+    "cold_expert_cache": {
+      "label": "empty dynamic GPU expert cache; OS page cache uncontrolled",
+      "repetitions": [
+        {
+          "repetition": 1,
+          "order": "async-sync",
+          "sync_wall_seconds": 3.502303599998413,
+          "async_wall_seconds": 2.750037500001781,
+          "sync_over_async_ratio": 1.2735475788952495,
+          "saving_seconds": 0.752266099996632,
+          "saving_fraction": 0.2147918016008015
+        },
+        {
+          "repetition": 2,
+          "order": "sync-async",
+          "sync_wall_seconds": 3.53871430000072,
+          "async_wall_seconds": 2.6076432000008936,
+          "sync_over_async_ratio": 1.3570546384564834,
+          "saving_seconds": 0.9310710999998264,
+          "saving_fraction": 0.26310999449705136
+        },
+        {
+          "repetition": 3,
+          "order": "async-sync",
+          "sync_wall_seconds": 3.431471899999451,
+          "async_wall_seconds": 2.7178982000004908,
+          "sync_over_async_ratio": 1.2625461468714434,
+          "saving_seconds": 0.7135736999989604,
+          "saving_fraction": 0.20794974308228328
+        }
+      ],
+      "aggregate": {
+        "median_sync_wall_seconds": 3.502303599998413,
+        "median_async_wall_seconds": 2.7178982000004908,
+        "paired_ratio_median": 1.2735475788952495,
+        "paired_ratio_min": 1.2625461468714434,
+        "paired_ratio_max": 1.3570546384564834,
+        "paired_ratio_mad": 0.011001432023806101,
+        "paired_ratio_mad_over_median": 0.008638414619224037,
+        "paired_saving_seconds_median": 0.752266099996632,
+        "paired_time_saved_fraction_median": 0.2147918016008015,
+        "all_repetitions_faster": true
+      },
+      "identical_primitives_per_mode": {
+        "requests": 899,
+        "hits": 78,
+        "misses": 821,
+        "evictions": 309,
+        "storage_loads": 821,
+        "transfer_loads": 821,
+        "storage_bytes": 10330570752,
+        "host_to_device_bytes": 10330570752
+      }
+    },
+    "retained_expert_cache": {
+      "label": "immediate repeat retaining dynamic GPU expert-cache state; OS page cache uncontrolled",
+      "repetitions": [
+        {
+          "repetition": 1,
+          "order": "async-sync",
+          "sync_wall_seconds": 1.7027859999980137,
+          "async_wall_seconds": 1.2000294999998005,
+          "sync_over_async_ratio": 1.4189534507262505,
+          "saving_seconds": 0.5027564999982133,
+          "saving_fraction": 0.29525524640136797
+        },
+        {
+          "repetition": 2,
+          "order": "sync-async",
+          "sync_wall_seconds": 1.6853081000008387,
+          "async_wall_seconds": 1.2054424999987532,
+          "sync_over_async_ratio": 1.398082529861509,
+          "saving_seconds": 0.47986560000208556,
+          "saving_fraction": 0.28473464288330824
+        },
+        {
+          "repetition": 3,
+          "order": "async-sync",
+          "sync_wall_seconds": 1.682752900000196,
+          "async_wall_seconds": 1.2097958999984257,
+          "sync_over_async_ratio": 1.3909394964905946,
+          "saving_seconds": 0.4729570000017702,
+          "saving_fraction": 0.28106146778990254
+        }
+      ],
+      "aggregate": {
+        "median_sync_wall_seconds": 1.6853081000008387,
+        "median_async_wall_seconds": 1.2054424999987532,
+        "paired_ratio_median": 1.398082529861509,
+        "paired_ratio_min": 1.3909394964905946,
+        "paired_ratio_max": 1.4189534507262505,
+        "paired_ratio_mad": 0.007143033370914376,
+        "paired_ratio_mad_over_median": 0.005109164314943517,
+        "paired_saving_seconds_median": 0.47986560000208556,
+        "paired_time_saved_fraction_median": 0.28473464288330824,
+        "all_repetitions_faster": true
+      },
+      "identical_primitives_per_mode": {
+        "requests": 899,
+        "hits": 144,
+        "misses": 755,
+        "evictions": 755,
+        "storage_loads": 755,
+        "transfer_loads": 755,
+        "storage_bytes": 9500098560,
+        "host_to_device_bytes": 9500098560
+      }
+    }
+  },
+  "raw_artifacts_sha256": {
+    "results/paged-async-mvp-91dece7/repetition-1-async.json": "02128dcdde986b1cb82191f9a7aa3370a5b642df90c95c273933b4274346d302",
+    "results/paged-async-mvp-91dece7/repetition-1-pair.json": "3c923f5f8f5f1fdc7c93a3ea898e300e2c672e2feb9455667d36596a9aff369c",
+    "results/paged-async-mvp-91dece7/repetition-1-sync.json": "1cc7aa3ba3ee9b64262384965fb609b6d2f3a6e190a2497ea2c3af92bdf48745",
+    "results/paged-async-mvp-91dece7/repetition-2-async.json": "55286be87482c35716c59daecc2b2906444fd5ba653eced56e9449848d9f2d42",
+    "results/paged-async-mvp-91dece7/repetition-2-pair.json": "90ad85be0391be65460fe47dc63122dbd266861276d01372034f626a0f6be853",
+    "results/paged-async-mvp-91dece7/repetition-2-sync.json": "0ccaa3b7a56af866de1bd9ab313ded807830f12fab52d4b6887030f9756167ae",
+    "results/paged-async-mvp-91dece7/repetition-3-async.json": "eb4ba16baf8b54ce769d46070935e09e50f2aaae1c989e3e56b857aacd034212",
+    "results/paged-async-mvp-91dece7/repetition-3-pair.json": "bf28adecfd8289bfa43063b470e2414ec64a14e510ff67c0c82bc6b2d90f3dc5",
+    "results/paged-async-mvp-91dece7/repetition-3-sync.json": "9bd7f933a1979032758219dda93772fa17ecd394384e20d3d1a74b149e1777e2"
+  },
+  "limitations": [
+    "This is one prompt with two generated tokens and only one generation-equivalent decode interval per pass.",
+    "The workload is teacher-forced against a pinned greedy reference and does not establish long autoregressive behavior.",
+    "Cold means an empty dynamic GPU expert cache, not cold NVMe or a flushed Windows page cache.",
+    "The safetensors store is mmap/page-cache backed, so this evidence does not prove physical NVMe reads overlapped compute.",
+    "The run did not record H2D and kernel intervals on one CUDA timeline, so the scheduling design and wall-time reduction do not by themselves prove temporal CUDA overlap.",
+    "CPU, RAM, storage load, power, temperature and clock state were not captured contemporaneously for every pair.",
+    "Three paired repetitions provide a provisional smoke signal, not a confidence interval or a production throughput claim.",
+    "A public general performance claim requires longer generation, all five workloads, more repetitions and profiler or CUDA-event interval evidence."
+  ]
+}

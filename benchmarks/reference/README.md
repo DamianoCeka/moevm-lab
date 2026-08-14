@@ -15,6 +15,9 @@ runtime smoke are kept distinct; none is a production serving claim.
   with sanitized per-repetition evidence and calibrated trace replay.
 - `paged-runtime-olmoe-p310-smoke/`: sanitized first full-model paged-runtime
   observation, exact token-ID gate, raw-output hashes and limitations.
+- `paged-runtime-olmoe-p310-async-smoke/`: three alternating-order sync/async
+  pairs, exact cache/traffic gates, a deterministic comparison chart and a
+  deliberately narrow two-token evidence boundary.
 - `paged-runtime-olmoe-p310-multiworkload/`: five-workload, 16-token
   teacher-forced comparison against the pinned Accelerate CPU-offload path.
 

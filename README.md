@@ -7,8 +7,9 @@ MoEVM Lab investigates whether a large sparse MoE can use VRAM as a small, predi
 > **Current status: v0.3.0.** The lab now
 > captures real routing, replays it against measured workstation hardware, and
 > executes a bounded synchronous expert-paging prototype on the full small
-> OLMoE checkpoint. It does not execute Kimi K3 weights or claim production
-> serving performance.
+> OLMoE checkpoint. The unreleased development tree also contains an opt-in
+> asynchronous expert-pipeline MVP; synchronous execution remains the default.
+> It does not execute Kimi K3 weights or claim production serving performance.
 
 ## Why this project exists
 
@@ -38,6 +39,11 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
   leave-one-workload-out evaluation.
 - A bounded, read-only OLMoE expert store, per-layer GPU slot cache, and
   synchronous paged forward path with exact tiny-model and real-expert checks.
+- An opt-in bounded async path with one I/O worker, pinned staging buffers, a
+  dedicated CUDA H2D stream and per-slot readiness/use events. It pipelines
+  mmap/page-cache service and H2D with expert compute inside a routed layer.
+  That mechanism alone is not evidence of physical NVMe overlap or speedup;
+  the provisional paired measurement below is separate evidence.
 - A guarded full-model smoke harness that verifies generated tokens against a
   pinned CPU-offload reference before reporting memory and timing observations.
 
@@ -95,6 +101,38 @@ generated tokens and one decode interval, with uncontrolled OS page-cache state
 and a synchronous Python runtime. It is a feasibility and capacity signal, not
 a general 37% speedup claim. See the
 [sanitized runtime evidence](benchmarks/reference/paged-runtime-olmoe-p310-smoke/README.md).
+
+The first async comparison is now accepted as a **provisional paired smoke**,
+not as a general benchmark. Three alternating-order pairs kept output tokens
+and per-scope cache/transfer counters identical; peak VRAM was also observed
+equal. Async used less wall time in every pair: median `1.274x` sync/async with
+an empty dynamic expert cache and `1.398x` with retained cache state.
+
+![Six paired comparisons: async used 20.8–26.3% less wall time with empty cache and 28.1–29.5% less with retained cache](benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/sync-vs-async.svg)
+
+This covers one prompt and two teacher-forced tokens on one GPU. It does not
+prove physical NVMe activity, CUDA interval overlap or production throughput.
+See the [chart, exact table and evidence boundary](benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
+The benchmark opt-in is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
+  -VenvPath .\.venv-real
+& '.\.venv-real\Scripts\python.exe' .\scripts\benchmark_paged_olmoe.py `
+  --snapshot <pinned-local-snapshot> `
+  --output .\results\paged-async.json `
+  --pipeline async `
+  --staging-slots 2
+```
+
+See [Async expert pipeline](docs/ASYNC_PIPELINE.md) for lifecycle rules,
+measurement boundaries and current limitations.
+
+For CUDA async execution, use `PagedExpertRuntime`; direct
+`ExpertSlotCache.get()` or `ExpertSlotCache.resolve()` calls are intentionally
+rejected because they cannot keep a returned slot view leased until GPU
+consumption finishes. The runtime owns that lease and records the corresponding
+last-use event.
 
 ## Reference simulation
 
@@ -171,7 +209,9 @@ benchmarks/reference/  Committed simulation, calibration and runtime evidence
    first workstation profile complete.
 4. **Bounded expert-paging runtime on a small real MoE** — synchronous
    full-model smoke and five-workload teacher-forced validation complete.
-5. **Pinned-RAM expert cache, CUDA streams and asynchronous NVMe reads.**
+5. **Async expert pipeline** — opt-in MVP for bounded staging, CUDA
+   streams/events and mmap/page-cache-backed reads; direct NVMe evidence and a
+   persistent pinned-RAM expert cache remain open.
 6. **Tile-level streaming and out-of-order expert scheduling.**
 7. **K3 checkpoint adapter**, only after smaller real models validate the design.
 
@@ -189,6 +229,7 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 - [CUDA transfer calibration](docs/CUDA_TRANSFER_CALIBRATION.md)
 - [Placement analysis](docs/PLACEMENT_ANALYSIS.md)
 - [Real paged-runtime smoke](benchmarks/reference/paged-runtime-olmoe-p310-smoke/README.md)
+- [Async expert pipeline](docs/ASYNC_PIPELINE.md)
 - [Third-party models and tools](docs/THIRD_PARTY_MODELS.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Research questions](docs/RESEARCH_QUESTIONS.md)
@@ -206,6 +247,13 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
   timings.
 - The current full-model runtime evidence covers one prompt, two output tokens,
   one decode interval and uncontrolled OS page-cache state.
+- The opt-in async pipeline uses mmap-backed safetensors through the OS page
+  cache. Its software overlap does not prove that physical NVMe reads overlap
+  compute. The published three-pair result is a provisional two-token smoke,
+  not a general speedup or production-throughput claim.
+- Current async tests establish bounded scheduling capability and numerical
+  parity. They do not measure an H2D/compute interval intersection and therefore
+  are not evidence that temporal overlap occurred on a particular run.
 - The simulator does not model kernels, quantization decode, attention, KV
   cache, PCIe contention, page faults or multi-GPU collectives.
 - A positive synthetic result is only permission to build the next experiment, not proof that K3 will reach 10 tok/s.

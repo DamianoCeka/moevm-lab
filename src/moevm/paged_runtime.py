@@ -26,11 +26,12 @@ training implementation.
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
 import time
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -375,6 +376,17 @@ class PagedRuntimeMetrics:
     storage_seconds: float
     transfer_seconds: float
     forward_seconds: float
+    coalesced_requests: int = 0
+    storage_loads: int = 0
+    transfer_loads: int = 0
+    admission_rejections: int = 0
+    storage_failures: int = 0
+    transfer_failures: int = 0
+    pending_loads_peak: int = 0
+    peak_staging_in_use: int = 0
+    staging_waits: int = 0
+    storage_queue_seconds: float = 0.0
+    demand_wait_seconds: float = 0.0
 
     @property
     def hit_rate(self) -> float:
@@ -392,6 +404,17 @@ class _MutableMetrics:
     storage_seconds: float = 0.0
     transfer_seconds: float = 0.0
     forward_seconds: float = 0.0
+    coalesced_requests: int = 0
+    storage_loads: int = 0
+    transfer_loads: int = 0
+    admission_rejections: int = 0
+    storage_failures: int = 0
+    transfer_failures: int = 0
+    pending_loads_peak: int = 0
+    peak_staging_in_use: int = 0
+    staging_waits: int = 0
+    storage_queue_seconds: float = 0.0
+    demand_wait_seconds: float = 0.0
 
     def snapshot(self) -> PagedRuntimeMetrics:
         return PagedRuntimeMetrics(
@@ -404,7 +427,53 @@ class _MutableMetrics:
             storage_seconds=self.storage_seconds,
             transfer_seconds=self.transfer_seconds,
             forward_seconds=self.forward_seconds,
+            coalesced_requests=self.coalesced_requests,
+            storage_loads=self.storage_loads,
+            transfer_loads=self.transfer_loads,
+            admission_rejections=self.admission_rejections,
+            storage_failures=self.storage_failures,
+            transfer_failures=self.transfer_failures,
+            pending_loads_peak=self.pending_loads_peak,
+            peak_staging_in_use=self.peak_staging_in_use,
+            staging_waits=self.staging_waits,
+            storage_queue_seconds=self.storage_queue_seconds,
+            demand_wait_seconds=self.demand_wait_seconds,
         )
+
+
+@dataclass(slots=True)
+class ExpertLoadTicket:
+    """Single-flight handle for one asynchronous expert load."""
+
+    key: ExpertKey
+    queued_at: float
+    request_clock: int
+    storage_done: threading.Event = field(default_factory=threading.Event)
+    completed: threading.Event = field(default_factory=threading.Event)
+    stage_index: int | None = None
+    destination_slot: int | None = None
+    destination_generation: int = 0
+    bytes_read: int = 0
+    error: BaseException | None = None
+    ready_event: Any | None = None
+    transfer_started_event: Any | None = None
+    state: str = "queued"
+    counted_as_hit: bool = False
+
+
+@dataclass(slots=True)
+class _ExpertLease:
+    cache: ExpertSlotCache
+    slot: int
+    generation: int
+    weights: ExpertWeights
+    released: bool = False
+
+    def release_after(self, stream: Any | None = None) -> None:
+        if self.released:
+            return
+        self.cache._release_lease(self.slot, self.generation, stream)
+        self.released = True
 
 
 class ExpertSlotCache:
@@ -428,6 +497,7 @@ class ExpertSlotCache:
         static_keys: Iterable[ExpertKey] = (),
         staging_slots: int = 1,
         pin_staging: bool | None = None,
+        pipeline_mode: str = "sync",
     ) -> None:
         if (capacity is None) == (capacity_per_layer is None):
             raise ValueError("set exactly one of capacity or capacity_per_layer")
@@ -436,6 +506,8 @@ class ExpertSlotCache:
             raise ValueError("capacity must be positive")
         if staging_slots <= 0:
             raise ValueError("staging_slots must be positive")
+        if pipeline_mode not in ("sync", "async"):
+            raise ValueError("pipeline_mode must be 'sync' or 'async'")
         self.store = store
         self.capacity_per_layer = capacity_per_layer
         if capacity_per_layer is None:
@@ -524,6 +596,13 @@ class ExpertSlotCache:
             )
         self.pin_staging = pin_staging
         self.staging_slots = staging_slots
+        self.pipeline_mode = pipeline_mode
+        if (
+            self.pipeline_mode == "async"
+            and self.device.type == "cuda"
+            and not self.pin_staging
+        ):
+            raise ValueError("the CUDA async pipeline requires pinned staging")
         self._staging_gate_up = torch.empty(
             (staging_slots, *spec.gate_up_shape),
             dtype=spec.dtype,
@@ -544,7 +623,27 @@ class ExpertSlotCache:
         self._next_staging_slot = 0
         self._metrics = _MutableMetrics()
         self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
         self.execution_lock = threading.RLock()
+        self._slot_generation: list[int] = [0] * self.capacity
+        self._slot_copying: list[bool] = [False] * self.capacity
+        self._slot_pin_count: list[int] = [0] * self.capacity
+        self._slot_last_use_event: list[Any | None] = [None] * self.capacity
+        self._stage_owner: list[ExpertLoadTicket | None] = [None] * staging_slots
+        self._stage_state: list[str] = ["free"] * staging_slots
+        self._pending_by_key: dict[ExpertKey, ExpertLoadTicket] = {}
+        self._unobserved_errors: dict[int, Exception] = {}
+        self._jobs: queue.Queue[ExpertLoadTicket | None] | None = None
+        self._worker: threading.Thread | None = None
+        self._accepting = True
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._transfer_stream: Any | None = None
+        self._pipeline_error: BaseException | None = None
+        if self.pipeline_mode == "async":
+            self._jobs = queue.Queue(maxsize=staging_slots)
+            if self.device.type == "cuda":
+                self._transfer_stream = torch.cuda.Stream(device=self.device)
 
     @property
     def allocated_cache_bytes(self) -> int:
@@ -553,6 +652,285 @@ class ExpertSlotCache:
     @property
     def allocated_staging_bytes(self) -> int:
         return self.staging_slots * self.store.spec.size_bytes
+
+    def __enter__(self) -> Self:
+        if self._closed:
+            raise RuntimeError("expert slot cache is closed")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def _ensure_worker(self) -> None:
+        if self.pipeline_mode != "async":
+            return
+        with self._condition:
+            if not self._accepting or self._closed:
+                raise RuntimeError("expert slot cache is closed")
+            if self._pipeline_error is not None:
+                raise RuntimeError("asynchronous expert pipeline failed") from (
+                    self._pipeline_error
+                )
+            if self._worker is not None:
+                return
+            worker = threading.Thread(
+                target=self._io_worker,
+                name="moevm-expert-io",
+                daemon=False,
+            )
+            self._worker = worker
+            worker.start()
+
+    def _claim_staging_slot(self, ticket: ExpertLoadTicket) -> int:
+        waited = False
+        with self._condition:
+            while True:
+                for stage_index, state in enumerate(self._stage_state):
+                    if state == "free":
+                        self._stage_state[stage_index] = "reading"
+                        self._stage_owner[stage_index] = ticket
+                        ticket.stage_index = stage_index
+                        in_use = sum(state != "free" for state in self._stage_state)
+                        self._metrics.peak_staging_in_use = max(
+                            self._metrics.peak_staging_in_use,
+                            in_use,
+                        )
+                        return stage_index
+                if not waited:
+                    self._metrics.staging_waits += 1
+                    waited = True
+                self._condition.wait(timeout=0.005)
+
+    def _free_staging_slot_locked(
+        self,
+        stage_index: int,
+        ticket: ExpertLoadTicket,
+    ) -> None:
+        if self._stage_owner[stage_index] is not ticket:
+            return
+        self._stage_owner[stage_index] = None
+        self._stage_state[stage_index] = "free"
+        self._condition.notify_all()
+
+    def _io_worker(self) -> None:
+        jobs = self._jobs
+        if jobs is None:  # pragma: no cover - constructor invariant
+            return
+        while True:
+            ticket = jobs.get()
+            try:
+                if ticket is None:
+                    return
+                stage_index = self._claim_staging_slot(ticket)
+                started = time.perf_counter()
+                with self._condition:
+                    self._metrics.storage_queue_seconds += started - ticket.queued_at
+                    ticket.state = "reading"
+                try:
+                    bytes_read = self.store.load_into(
+                        ticket.key,
+                        self._staging_gate_up[stage_index],
+                        self._staging_down[stage_index],
+                    )
+                except Exception as exc:  # noqa: BLE001 - worker transports failures
+                    elapsed = time.perf_counter() - started
+                    with self._condition:
+                        ticket.error = exc
+                        ticket.state = "failed"
+                        self._unobserved_errors[id(ticket)] = exc
+                        self._metrics.storage_seconds += elapsed
+                        self._metrics.storage_failures += 1
+                        if self._pending_by_key.get(ticket.key) is ticket:
+                            del self._pending_by_key[ticket.key]
+                        self._free_staging_slot_locked(stage_index, ticket)
+                        ticket.storage_done.set()
+                        ticket.completed.set()
+                        self._condition.notify_all()
+                    continue
+
+                elapsed = time.perf_counter() - started
+                with self._condition:
+                    ticket.bytes_read = bytes_read
+                    ticket.state = "ready"
+                    self._stage_state[stage_index] = "ready"
+                    self._metrics.storage_seconds += elapsed
+                    self._metrics.storage_bytes += bytes_read
+                    self._metrics.storage_loads += 1
+                    ticket.storage_done.set()
+                    self._condition.notify_all()
+            finally:
+                jobs.task_done()
+
+    def _new_resident_ticket_locked(
+        self,
+        key: ExpertKey,
+        slot: int,
+        *,
+        account_request: bool,
+    ) -> ExpertLoadTicket:
+        ticket = ExpertLoadTicket(
+            key=key,
+            queued_at=time.perf_counter(),
+            request_clock=self._clock if account_request else 0,
+            destination_slot=slot,
+            destination_generation=self._slot_generation[slot],
+            state="resident",
+            counted_as_hit=account_request,
+        )
+        ticket.storage_done.set()
+        ticket.completed.set()
+        return ticket
+
+    def submit(self, key: ExpertKey) -> ExpertLoadTicket:
+        """Submit one bounded, coalesced storage load in async mode."""
+        with self.execution_lock:
+            return self._submit_locked(key, account_request=True)
+
+    def _submit_lookahead(self, key: ExpertKey) -> ExpertLoadTicket:
+        """Schedule storage without changing demand or LRU accounting."""
+        with self.execution_lock:
+            return self._submit_locked(key, account_request=False)
+
+    def _submit_locked(
+        self,
+        key: ExpertKey,
+        *,
+        account_request: bool,
+    ) -> ExpertLoadTicket:
+        if self.pipeline_mode != "async":
+            raise RuntimeError("submit requires pipeline_mode='async'")
+        if key not in self.store:
+            raise KeyError(f"unknown expert: {key.compact()}")
+        self._ensure_worker()
+        with self._condition:
+            if not self._accepting or self._closed:
+                raise RuntimeError("expert slot cache is closed")
+            if self._pipeline_error is not None:
+                raise RuntimeError("asynchronous expert pipeline failed") from (
+                    self._pipeline_error
+                )
+            if account_request:
+                self._clock += 1
+                self._metrics.requests += 1
+            existing_slot = self._key_to_slot.get(key)
+            if existing_slot is not None:
+                if account_request:
+                    self._last_used[existing_slot] = self._clock
+                    self._metrics.hits += 1
+                return self._new_resident_ticket_locked(
+                    key,
+                    existing_slot,
+                    account_request=account_request,
+                )
+            existing_ticket = self._pending_by_key.get(key)
+            if existing_ticket is not None:
+                if account_request:
+                    existing_ticket.request_clock = self._clock
+                    self._metrics.misses += 1
+                    self._metrics.coalesced_requests += 1
+                return existing_ticket
+            if account_request:
+                self._metrics.misses += 1
+            ticket = ExpertLoadTicket(
+                key=key,
+                queued_at=time.perf_counter(),
+                request_clock=self._clock if account_request else 0,
+            )
+            self._pending_by_key[key] = ticket
+            self._metrics.pending_loads_peak = max(
+                self._metrics.pending_loads_peak,
+                len(self._pending_by_key),
+            )
+
+        self._enqueue_ticket(ticket, rollback_request=account_request)
+        return ticket
+
+    def _enqueue_ticket(
+        self,
+        ticket: ExpertLoadTicket,
+        *,
+        rollback_request: bool = False,
+    ) -> None:
+        jobs = self._jobs
+        if jobs is None:  # pragma: no cover - constructor invariant
+            raise RuntimeError("asynchronous job queue is unavailable")
+        try:
+            jobs.put_nowait(ticket)
+        except queue.Full as exc:
+            error = RuntimeError(
+                "asynchronous expert queue is full; resolve submitted work first"
+            )
+            with self._condition:
+                if self._pending_by_key.get(ticket.key) is ticket:
+                    del self._pending_by_key[ticket.key]
+                if rollback_request:
+                    self._metrics.requests -= 1
+                    self._metrics.misses -= 1
+                self._metrics.admission_rejections += 1
+                ticket.error = error
+                ticket.state = "failed"
+                ticket.storage_done.set()
+                ticket.completed.set()
+                self._condition.notify_all()
+            raise error from exc
+
+    def _wait_for_storage(self, ticket: ExpertLoadTicket) -> None:
+        started = time.perf_counter()
+        while not ticket.storage_done.wait(timeout=0.002):
+            self._poll_transfer_completions()
+        elapsed = time.perf_counter() - started
+        with self._condition:
+            self._metrics.demand_wait_seconds += elapsed
+        self._raise_ticket_error(ticket)
+
+    def _raise_ticket_error(self, ticket: ExpertLoadTicket) -> None:
+        error = ticket.error
+        if error is None:
+            return
+        with self._condition:
+            self._unobserved_errors.pop(id(ticket), None)
+        raise error
+
+    def _refresh_stale_resident_ticket(
+        self,
+        ticket: ExpertLoadTicket,
+    ) -> ExpertLoadTicket:
+        if ticket.state != "resident":
+            return ticket
+        with self._condition:
+            if self._closed or not self._accepting:
+                raise RuntimeError("expert slot cache is closed")
+            current_slot = self._key_to_slot.get(ticket.key)
+            if current_slot is not None:
+                ticket.destination_slot = current_slot
+                ticket.destination_generation = self._slot_generation[current_slot]
+                return ticket
+            pending = self._pending_by_key.get(ticket.key)
+            if ticket.counted_as_hit:
+                self._metrics.hits -= 1
+                self._metrics.misses += 1
+                ticket.counted_as_hit = False
+            if pending is not None:
+                self._metrics.coalesced_requests += 1
+                return pending
+            ticket.queued_at = time.perf_counter()
+            ticket.storage_done.clear()
+            ticket.completed.clear()
+            ticket.stage_index = None
+            ticket.destination_slot = None
+            ticket.destination_generation = 0
+            ticket.bytes_read = 0
+            ticket.error = None
+            ticket.ready_event = None
+            ticket.transfer_started_event = None
+            ticket.state = "queued"
+            self._pending_by_key[ticket.key] = ticket
+            self._metrics.pending_loads_peak = max(
+                self._metrics.pending_loads_peak,
+                len(self._pending_by_key),
+            )
+        self._enqueue_ticket(ticket)
+        return ticket
 
     @property
     def resident_keys(self) -> tuple[ExpertKey, ...]:
@@ -576,6 +954,43 @@ class ExpertSlotCache:
             return self._select_lru_slot(dynamic_slots)
         return self._select_lru_slot(self._layer_slots[key.layer])
 
+    def _async_candidate_slots(self, key: ExpertKey) -> tuple[int, ...]:
+        static_slot = self._static_slots.get(key)
+        if static_slot is not None:
+            return (static_slot,)
+        dynamic_slots = self._dynamic_slots_by_layer[key.layer]
+        if self.policy is CachePolicy.STATIC:
+            return (dynamic_slots[0],)
+        if self.policy is CachePolicy.HYBRID:
+            return dynamic_slots
+        return self._layer_slots[key.layer]
+
+    def _select_async_slot_locked(self, key: ExpertKey) -> int | None:
+        available = tuple(
+            slot
+            for slot in self._async_candidate_slots(key)
+            if not self._slot_copying[slot] and self._slot_pin_count[slot] == 0
+        )
+        if not available:
+            return None
+        empty = [slot for slot in available if self._slot_to_key[slot] is None]
+        if empty:
+            return min(empty)
+        return min(available, key=lambda slot: (self._last_used[slot], slot))
+
+    def _wait_for_async_slot(self, key: ExpertKey) -> int:
+        while True:
+            self._poll_transfer_completions()
+            with self._condition:
+                slot = self._select_async_slot_locked(key)
+                if slot is not None:
+                    return slot
+                if self._pipeline_error is not None:
+                    raise RuntimeError("asynchronous expert pipeline failed") from (
+                        self._pipeline_error
+                    )
+                self._condition.wait(timeout=0.002)
+
     def _synchronize_device(self) -> None:
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
@@ -590,11 +1005,308 @@ class ExpertSlotCache:
         self._down_slots[slot].copy_(staging_down, non_blocking=False)
         self._synchronize_device()
 
+    def _enqueue_staging_to_slot(
+        self,
+        slot: int,
+        staging_gate_up: torch.Tensor,
+        staging_down: torch.Tensor,
+        wait_events: tuple[Any, ...],
+    ) -> tuple[Any, Any]:
+        stream = self._transfer_stream
+        if stream is None:  # pragma: no cover - caller/device invariant
+            raise RuntimeError("CUDA transfer stream is unavailable")
+        started = torch.cuda.Event(enable_timing=True)
+        ready = torch.cuda.Event(enable_timing=True)
+        with torch.cuda.stream(stream):
+            for event in wait_events:
+                stream.wait_event(event)
+            started.record(stream)
+            self._gate_up_slots[slot].copy_(
+                staging_gate_up,
+                non_blocking=True,
+            )
+            self._down_slots[slot].copy_(
+                staging_down,
+                non_blocking=True,
+            )
+            ready.record(stream)
+        return started, ready
+
+    def _complete_transfer_locked(self, ticket: ExpertLoadTicket) -> None:
+        slot = ticket.destination_slot
+        stage_index = ticket.stage_index
+        if slot is None or stage_index is None:
+            raise RuntimeError("incomplete async transfer ticket")
+        if self._slot_generation[slot] != ticket.destination_generation:
+            raise RuntimeError("stale async transfer completion")
+        self._slot_copying[slot] = False
+        self._slot_to_key[slot] = ticket.key
+        self._key_to_slot[ticket.key] = slot
+        self._last_used[slot] = ticket.request_clock
+        if self.device.type == "cuda":
+            self._metrics.host_to_device_bytes += self.store.spec.size_bytes
+        self._metrics.transfer_loads += 1
+        if self._pending_by_key.get(ticket.key) is ticket:
+            del self._pending_by_key[ticket.key]
+        ticket.state = "resident"
+        ticket.completed.set()
+        self._free_staging_slot_locked(stage_index, ticket)
+        self._condition.notify_all()
+
+    def _fail_transfer(self, ticket: ExpertLoadTicket, error: Exception) -> None:
+        if self.device.type == "cuda" and self._transfer_stream is not None:
+            try:
+                self._transfer_stream.synchronize()
+            except Exception as synchronize_error:  # noqa: BLE001
+                with self._condition:
+                    if self._pipeline_error is None:
+                        self._pipeline_error = synchronize_error
+        with self._condition:
+            slot = ticket.destination_slot
+            if (
+                slot is not None
+                and self._slot_generation[slot] == ticket.destination_generation
+            ):
+                self._slot_copying[slot] = False
+                self._slot_to_key[slot] = None
+                self._last_used[slot] = 0
+                self._slot_pin_count[slot] = 0
+            if self._pending_by_key.get(ticket.key) is ticket:
+                del self._pending_by_key[ticket.key]
+            if ticket.stage_index is not None:
+                self._free_staging_slot_locked(ticket.stage_index, ticket)
+            ticket.error = error
+            ticket.state = "failed"
+            ticket.completed.set()
+            self._unobserved_errors[id(ticket)] = error
+            self._metrics.transfer_failures += 1
+            self._condition.notify_all()
+
+    def _poll_transfer_completions(self) -> None:
+        if self.pipeline_mode != "async" or self.device.type != "cuda":
+            return
+        with self._condition:
+            inflight = tuple(
+                ticket
+                for ticket, state in zip(
+                    self._stage_owner,
+                    self._stage_state,
+                    strict=True,
+                )
+                if ticket is not None and state == "h2d"
+            )
+        for ticket in inflight:
+            ready = ticket.ready_event
+            if ready is None:
+                continue
+            try:
+                completed = bool(ready.query())
+            except Exception as exc:  # noqa: BLE001 - CUDA failure boundary
+                with self._condition:
+                    self._pipeline_error = exc
+                self._fail_transfer(ticket, exc)
+                continue
+            if not completed:
+                continue
+            transfer_seconds = 0.0
+            started = ticket.transfer_started_event
+            if started is not None:
+                try:
+                    transfer_seconds = float(started.elapsed_time(ready)) / 1000.0
+                except RuntimeError:
+                    transfer_seconds = 0.0
+            with self._condition:
+                if ticket.state != "copying":
+                    continue
+                self._metrics.transfer_seconds += transfer_seconds
+                self._complete_transfer_locked(ticket)
+
+    def _schedule_ticket_transfer(
+        self,
+        ticket: ExpertLoadTicket,
+        _use_stream: Any | None,
+    ) -> None:
+        with self._condition:
+            if ticket.destination_slot is not None:
+                return
+        slot = self._wait_for_async_slot(ticket.key)
+        wait_events: list[Any] = []
+        with self._condition:
+            if ticket.destination_slot is not None:
+                return
+            evicted_key = self._slot_to_key[slot]
+            if evicted_key is not None and self.device.type == "cuda":
+                last_use = self._slot_last_use_event[slot]
+                if last_use is not None:
+                    wait_events.append(last_use)
+
+            if evicted_key is not None:
+                del self._key_to_slot[evicted_key]
+                self._slot_to_key[slot] = None
+                self._last_used[slot] = 0
+                self._metrics.evictions += 1
+            self._slot_generation[slot] += 1
+            ticket.destination_slot = slot
+            ticket.destination_generation = self._slot_generation[slot]
+            ticket.state = "copying"
+            self._slot_copying[slot] = True
+            stage_index = ticket.stage_index
+            if stage_index is None:  # pragma: no cover - storage invariant
+                raise RuntimeError("async ticket has no staging slot")
+            self._stage_state[stage_index] = "h2d"
+            staging_gate_up = self._staging_gate_up[stage_index]
+            staging_down = self._staging_down[stage_index]
+
+        transfer_started = time.perf_counter()
+        try:
+            if self.device.type == "cuda":
+                started_event, ready_event = self._enqueue_staging_to_slot(
+                    slot,
+                    staging_gate_up,
+                    staging_down,
+                    tuple(wait_events),
+                )
+                with self._condition:
+                    ticket.transfer_started_event = started_event
+                    ticket.ready_event = ready_event
+            else:
+                self._copy_staging_to_slot(slot, staging_gate_up, staging_down)
+                with self._condition:
+                    self._metrics.transfer_seconds += (
+                        time.perf_counter() - transfer_started
+                    )
+                    self._complete_transfer_locked(ticket)
+        except Exception as exc:  # noqa: BLE001 - transactional rollback
+            self._fail_transfer(ticket, exc)
+            self._raise_ticket_error(ticket)
+
+    def _account_demand(self, ticket: ExpertLoadTicket) -> None:
+        with self._condition:
+            self._clock += 1
+            self._metrics.requests += 1
+            ticket.request_clock = self._clock
+            existing_slot = self._key_to_slot.get(ticket.key)
+            if existing_slot is None:
+                self._metrics.misses += 1
+                return
+            self._metrics.hits += 1
+            self._last_used[existing_slot] = self._clock
+
+    def _acquire_ticket(
+        self,
+        ticket: ExpertLoadTicket,
+        *,
+        compute_stream: Any | None,
+        synchronize: bool,
+        account_demand: bool = False,
+    ) -> _ExpertLease:
+        if account_demand:
+            self._account_demand(ticket)
+        ticket = self._refresh_stale_resident_ticket(ticket)
+        self._raise_ticket_error(ticket)
+        if ticket.state not in ("resident", "copying"):
+            self._wait_for_storage(ticket)
+            self._schedule_ticket_transfer(ticket, compute_stream)
+        elif ticket.state == "copying" and ticket.ready_event is None:
+            self._schedule_ticket_transfer(ticket, compute_stream)
+        self._raise_ticket_error(ticket)
+
+        ready = ticket.ready_event
+        if ready is not None:
+            if synchronize:
+                try:
+                    ready.synchronize()
+                except Exception as exc:  # noqa: BLE001 - CUDA failure boundary
+                    with self._condition:
+                        self._pipeline_error = exc
+                    self._fail_transfer(ticket, exc)
+                    self._raise_ticket_error(ticket)
+                self._poll_transfer_completions()
+            else:
+                if compute_stream is None:  # pragma: no cover - caller invariant
+                    raise RuntimeError("compute stream is required for async acquire")
+                compute_stream.wait_event(ready)
+
+        slot = ticket.destination_slot
+        if slot is None:  # pragma: no cover - ticket invariant
+            raise RuntimeError("async ticket has no destination slot")
+        with self._condition:
+            self._raise_ticket_error(ticket)
+            if self._slot_generation[slot] != ticket.destination_generation:
+                raise RuntimeError("async expert lease became stale")
+            if ticket.state == "resident" and self._slot_to_key[slot] != ticket.key:
+                raise RuntimeError("reserved async expert is no longer resident")
+            self._slot_pin_count[slot] += 1
+            weights = ExpertWeights(
+                self._gate_up_slots[slot],
+                self._down_slots[slot],
+            )
+        return _ExpertLease(
+            cache=self,
+            slot=slot,
+            generation=ticket.destination_generation,
+            weights=weights,
+        )
+
+    def _release_lease(
+        self,
+        slot: int,
+        generation: int,
+        stream: Any | None,
+    ) -> None:
+        use_event = None
+        if self.device.type == "cuda":
+            if stream is None:
+                stream = torch.cuda.current_stream(self.device)
+            use_event = torch.cuda.Event(enable_timing=False)
+            use_event.record(stream)
+        with self._condition:
+            if self._slot_generation[slot] != generation:
+                raise RuntimeError("cannot release a stale expert lease")
+            if self._slot_pin_count[slot] <= 0:
+                raise RuntimeError("expert lease was not pinned")
+            self._slot_pin_count[slot] -= 1
+            if use_event is not None:
+                self._slot_last_use_event[slot] = use_event
+            self._condition.notify_all()
+
+    def resolve(self, ticket: ExpertLoadTicket) -> ExpertWeights:
+        """Wait for a submitted expert and return fully materialized weights."""
+        if self.pipeline_mode != "async":
+            raise RuntimeError("resolve requires pipeline_mode='async'")
+        if self.device.type == "cuda":
+            raise RuntimeError(
+                "raw CUDA weights are unsafe in async mode; use PagedExpertRuntime"
+            )
+        with self.execution_lock:
+            stream = (
+                torch.cuda.current_stream(self.device)
+                if self.device.type == "cuda"
+                else None
+            )
+            lease = self._acquire_ticket(
+                ticket,
+                compute_stream=stream,
+                synchronize=True,
+            )
+            weights = lease.weights
+            lease.release_after(stream)
+            return weights
+
     def get(self, key: ExpertKey) -> ExpertWeights:
         """Return weights valid until a later miss reuses their cache slot."""
         if key not in self.store:
             raise KeyError(f"unknown expert: {key.compact()}")
+        if self.pipeline_mode == "async":
+            if self.device.type == "cuda":
+                raise RuntimeError(
+                    "raw CUDA weights are unsafe in async mode; use PagedExpertRuntime"
+                )
+            with self.execution_lock:
+                return self.resolve(self.submit(key))
         with self.execution_lock, self._lock:
+            if self._closed:
+                raise RuntimeError("expert slot cache is closed")
             self._clock += 1
             self._metrics.requests += 1
             existing_slot = self._key_to_slot.get(key)
@@ -625,6 +1337,7 @@ class ExpertSlotCache:
             finally:
                 self._metrics.storage_seconds += time.perf_counter() - storage_started
             self._metrics.storage_bytes += bytes_read
+            self._metrics.storage_loads += 1
 
             if evicted_key is not None:
                 self._synchronize_device()
@@ -644,6 +1357,7 @@ class ExpertSlotCache:
                 self._metrics.transfer_seconds += time.perf_counter() - transfer_started
             if self.device.type != "cpu":
                 self._metrics.host_to_device_bytes += self.store.spec.size_bytes
+            self._metrics.transfer_loads += 1
 
             self._slot_to_key[slot] = key
             self._key_to_slot[key] = slot
@@ -656,7 +1370,90 @@ class ExpertSlotCache:
     def prefetch(self, keys: Iterable[ExpertKey]) -> None:
         with self.execution_lock:
             for key in dict.fromkeys(keys):
-                self.get(key)
+                if self.pipeline_mode == "async":
+                    stream = (
+                        torch.cuda.current_stream(self.device)
+                        if self.device.type == "cuda"
+                        else None
+                    )
+                    lease = self._acquire_ticket(
+                        self.submit(key),
+                        compute_stream=stream,
+                        synchronize=True,
+                    )
+                    lease.release_after(stream)
+                else:
+                    self.get(key)
+
+    def wait_idle(self) -> None:
+        """Drain submitted async work without closing the external store."""
+        if self.pipeline_mode != "async":
+            return
+        first_error: Exception | None = None
+        with self.execution_lock:
+            while True:
+                self._poll_transfer_completions()
+                with self._condition:
+                    unobserved_errors = tuple(self._unobserved_errors.values())
+                    self._unobserved_errors.clear()
+                    pending = tuple(self._pending_by_key.values())
+                    stages_idle = all(state == "free" for state in self._stage_state)
+                    idle = not pending and stages_idle
+                if first_error is None and unobserved_errors:
+                    first_error = unobserved_errors[0]
+                if idle:
+                    break
+                for ticket in pending:
+                    try:
+                        stream = (
+                            torch.cuda.current_stream(self.device)
+                            if self.device.type == "cuda"
+                            else None
+                        )
+                        lease = self._acquire_ticket(
+                            ticket,
+                            compute_stream=stream,
+                            synchronize=True,
+                        )
+                        lease.release_after(stream)
+                    except Exception as exc:  # noqa: BLE001 - drain all tickets
+                        if first_error is None:
+                            first_error = exc
+                self._poll_transfer_completions()
+        if first_error is not None:
+            raise first_error
+
+    def close(self) -> None:
+        """Idempotently stop the optional worker; the store remains external."""
+        with self._close_lock:
+            if self._closed:
+                return
+            first_error: Exception | None = None
+            with self.execution_lock:
+                with self._condition:
+                    self._accepting = False
+                    self._condition.notify_all()
+                try:
+                    self.wait_idle()
+                except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                    first_error = exc
+                worker = self._worker
+                jobs = self._jobs
+            if worker is not None and jobs is not None:
+                jobs.join()
+                jobs.put(None)
+                worker.join()
+            if self._transfer_stream is not None:
+                try:
+                    self._transfer_stream.synchronize()
+                except Exception as exc:  # noqa: BLE001 - shutdown must continue
+                    if first_error is None:
+                        first_error = exc
+            with self._condition:
+                self._closed = True
+                self._condition.notify_all()
+            if first_error is not None:
+                raise first_error
 
     def metrics(self) -> PagedRuntimeMetrics:
         with self._lock:
@@ -723,26 +1520,86 @@ class PagedExpertRuntime:
         active_experts = torch.unique(top_k_index.detach(), sorted=True).cpu().tolist()
         valid_experts = set(self.cache.store.experts_in_layer(layer))
         sentinel = max(valid_experts, default=-1) + 1
+        expert_ids: list[int] = []
         for expert in active_experts:
             expert_id = int(expert)
             if expert_id == sentinel:
                 continue
             if expert_id not in valid_experts:
                 raise KeyError(f"unknown expert: L{layer}:E{expert_id}")
-            weights = self.cache.get(ExpertKey(layer, expert_id))
-            token_index, top_k_position = torch.where(top_k_index == expert_id)
-            current_state = hidden_states[token_index]
-            gate, up = torch_functional.linear(current_state, weights.gate_up).chunk(
-                2, dim=-1
-            )
-            current = torch_functional.silu(gate) * up
-            current = torch_functional.linear(current, weights.down)
-            current = current * top_k_weights[token_index, top_k_position, None]
-            final_hidden_states.index_add_(
-                0, token_index, current.to(final_hidden_states.dtype)
-            )
+            expert_ids.append(expert_id)
+
+        compute_stream = (
+            torch.cuda.current_stream(hidden_states.device)
+            if hidden_states.device.type == "cuda"
+            else None
+        )
+        tickets: dict[int, ExpertLoadTicket] = {}
+        next_to_submit = 0
+        try:
+            if self.cache.pipeline_mode == "async":
+                initial_depth = min(self.cache.staging_slots, len(expert_ids))
+                while next_to_submit < initial_depth:
+                    expert_id = expert_ids[next_to_submit]
+                    tickets[expert_id] = self.cache._submit_lookahead(
+                        ExpertKey(layer, expert_id)
+                    )
+                    next_to_submit += 1
+            for expert_id in expert_ids:
+                lease: _ExpertLease | None = None
+                if self.cache.pipeline_mode == "async":
+                    lease = self.cache._acquire_ticket(
+                        tickets[expert_id],
+                        compute_stream=compute_stream,
+                        synchronize=False,
+                        account_demand=True,
+                    )
+                    weights = lease.weights
+                else:
+                    weights = self.cache.get(ExpertKey(layer, expert_id))
+                try:
+                    if self.cache.pipeline_mode == "async" and next_to_submit < len(
+                        expert_ids
+                    ):
+                        next_expert = expert_ids[next_to_submit]
+                        tickets[next_expert] = self.cache._submit_lookahead(
+                            ExpertKey(layer, next_expert)
+                        )
+                        next_to_submit += 1
+                    token_index, top_k_position = torch.where(top_k_index == expert_id)
+                    current_state = hidden_states[token_index]
+                    gate, up = torch_functional.linear(
+                        current_state, weights.gate_up
+                    ).chunk(2, dim=-1)
+                    current = torch_functional.silu(gate) * up
+                    current = torch_functional.linear(current, weights.down)
+                    current = current * top_k_weights[token_index, top_k_position, None]
+                    final_hidden_states.index_add_(
+                        0, token_index, current.to(final_hidden_states.dtype)
+                    )
+                finally:
+                    if lease is not None:
+                        lease.release_after(compute_stream)
+        except Exception:
+            if self.cache.pipeline_mode == "async":
+                try:
+                    self.cache.wait_idle()
+                except Exception as cleanup_error:  # noqa: BLE001
+                    with self.cache._condition:
+                        if self.cache._pipeline_error is None:
+                            self.cache._pipeline_error = cleanup_error
+            raise
         if hidden_states.device.type == "cuda":
-            torch.cuda.synchronize(hidden_states.device)
+            if self.cache.pipeline_mode == "async":
+                try:
+                    compute_stream.synchronize()
+                except Exception as exc:
+                    with self.cache._condition:
+                        self.cache._pipeline_error = exc
+                    raise
+                self.cache._poll_transfer_completions()
+            else:
+                torch.cuda.synchronize(hidden_states.device)
         self.cache.add_forward_seconds(time.perf_counter() - started)
         return final_hidden_states
 
