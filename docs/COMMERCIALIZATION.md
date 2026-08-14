@@ -11,7 +11,18 @@ GitHub is distribution and proof, not the business by itself.
 - cloud teams with underutilized CPU RAM and storage beside GPUs;
 - runtime projects that need a specialized expert-memory backend.
 
-## Evidence required before monetization
+## What is sellable now
+
+MoEVM Lab can support paid, fixed-scope feasibility audits today. The customer
+pays for engineering time, controlled measurements, an evidence bundle and a
+decision about model/hardware fit. The community code remains Apache-2.0, and a
+negative or conditional result is a valid outcome.
+
+The current design-partner offer, boundaries and public intake path are defined
+in [commercial support](../COMMERCIAL_SUPPORT.md). It does not sell a production
+runtime or promise a speedup.
+
+## Evidence required before selling a production runtime
 
 1. End-to-end improvement on a real public model.
 2. Reproducible quality equivalence.
@@ -45,3 +56,7 @@ The sales metric should not be GitHub stars. It should be one of:
 - lower latency or energy per generated token.
 
 Do not price or seek investment from simulated results alone.
+
+Paid audits must likewise distinguish simulated, replayed, microbenchmark and
+end-to-end evidence. A fee buys scoped work and a reproducible answer, not a
+preselected positive result.

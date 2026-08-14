@@ -82,6 +82,25 @@ retain their upstream license. This is an interactive up-to-two-token hardware
 demonstration, not publishable benchmark evidence or a general throughput claim.
 See the [one-command demo guide](docs/ONE_COMMAND_DEMO.md).
 
+## Commercial support and design-partner pilots
+
+Teams evaluating a sparse MoE on constrained GPU hardware can request a paid,
+fixed-scope model and hardware fit audit. The engagement measures the customer's
+agreed workload, identifies memory and transfer bottlenecks, compares an
+existing baseline where possible, and ends with a reproducible go/no-go or
+next-step recommendation.
+
+The introductory, non-binding range for a Reproducible Pilot is EUR
+1,500–2,500, subject to a written quote. This is engineering and measurement
+work, not a license fee: the community code remains Apache-2.0. MoEVM is
+pre-alpha research software, and no speedup, checkpoint compatibility or
+production SLA is guaranteed.
+
+See [commercial support and pilot deliverables](COMMERCIAL_SUPPORT.md), or
+[start a public, non-confidential inquiry](https://github.com/DamianoCeka/moevm-lab/issues/new?template=commercial_inquiry.yml).
+Do not put private weights, credentials, customer data or confidential prompts
+in a GitHub issue.
+
 ## Real-routing evidence
 
 M1 captured `allenai/OLMoE-1B-7B-0924` at the pinned revision
@@ -265,6 +284,9 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 - [Placement analysis](docs/PLACEMENT_ANALYSIS.md)
 - [Real paged-runtime smoke](benchmarks/reference/paged-runtime-olmoe-p310-smoke/README.md)
 - [Async expert pipeline](docs/ASYNC_PIPELINE.md)
+- [Commercial support](COMMERCIAL_SUPPORT.md)
+- [Commercialization roadmap](docs/COMMERCIALIZATION.md)
+- [Privacy notice for repository inquiries](PRIVACY.md)
 - [Third-party models and tools](docs/THIRD_PARTY_MODELS.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Research questions](docs/RESEARCH_QUESTIONS.md)

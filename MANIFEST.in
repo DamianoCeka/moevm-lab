@@ -1,10 +1,12 @@
 include configs/*.toml
 include CHANGELOG.md
 include CITATION.cff
+include COMMERCIAL_SUPPORT.md
 include CONTRIBUTING.md
 include demo.cmd
 include LICENSE
 include NOTICE
+include PRIVACY.md
 include SECURITY.md
 recursive-include benchmarks *.csv *.json *.jsonl *.md
 recursive-include docs *.md

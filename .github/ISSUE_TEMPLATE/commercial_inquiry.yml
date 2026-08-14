@@ -1,0 +1,78 @@
+name: Commercial pilot inquiry
+description: Request a public, non-confidential feasibility or integration discussion
+title: "[pilot] "
+labels: ["commercial-inquiry"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue, your GitHub username and its content are public and may be indexed or cached. Read the [privacy notice](https://github.com/DamianoCeka/moevm-lab/blob/main/PRIVACY.md) before submitting. Share only the minimum information needed for an initial technical-fit review. Do not include credentials, private model links or weights, customer data, confidential prompts, logs or benchmark artifacts.
+  - type: dropdown
+    id: engagement
+    attributes:
+      label: Engagement type
+      options:
+        - Fit Review
+        - Reproducible Pilot
+        - Custom Integration
+        - Sponsored public benchmark
+        - Not sure yet
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision or problem
+      description: What technical or hardware decision should the work answer?
+      placeholder: We need to determine whether our MoE workload fits and performs acceptably on...
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Public model or model family
+      description: Give a public model ID and revision if one can be shared; otherwise describe only the model family and scale.
+      placeholder: allenai/OLMoE-1B-7B-0924, revision ...
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware profile
+      description: GPU and VRAM, CPU, system RAM, storage and operating system. Do not include serial numbers or remote-access details.
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload and current baseline
+      description: Describe prompt/decode length, batch size, concurrency and the current runtime at a high level.
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criterion and target date
+      description: Examples include a VRAM ceiling, a latency target, a hardware-purchase decision or a reproducible comparison.
+    validations:
+      required: true
+  - type: dropdown
+    id: public_case_study
+    attributes:
+      label: Sanitized case study
+      description: Could anonymized results be discussed publicly after separate written approval?
+      options:
+        - To discuss
+        - Potentially — separate written approval required
+        - "No"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safeguards
+    attributes:
+      label: Public-request safeguards
+      options:
+        - label: I have not included credentials, private weights or links, customer data, confidential prompts, logs or proprietary artifacts.
+          required: true
+        - label: I have read the privacy notice and understand that my GitHub account and everything submitted here are public.
+          required: true
+        - label: I understand that MoEVM Lab is pre-alpha research software and that an inquiry does not guarantee compatibility, performance or acceptance of paid work.
+          required: true
