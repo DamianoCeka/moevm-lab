@@ -54,11 +54,17 @@ solo intervallo decode e la cache del sistema operativo non è controllata.
 
 Nel ramo di sviluppo esiste ora anche un MVP asincrono opzionale: un worker di
 lettura, almeno due buffer pinned, uno stream CUDA H2D e eventi che proteggono
-gli slot GPU. Un test deterministico verifica che una lettura futura possa
-avanzare mentre è attivo il calcolo dell'expert corrente; i test CUDA verificano
-parità numerica e ownership degli slot. Questo dimostra che il software è
-predisposto alla sovrapposizione, non che l'SSD fisico stia già lavorando in
-parallelo né che il modello sia più veloce.
+gli slot GPU. Il primo confronto controllato usa tre coppie contro il percorso
+sincrono, alternando l'ordine. A parità esatta di token, hit/miss, traffico e
+VRAM, l'async usa meno tempo in tutte le coppie: mediana `1,274x` con cache
+expert GPU vuota e `1,398x` nella ripetizione che conserva la cache.
+
+![Sei confronti appaiati: l'async usa il 20,8–26,3% di tempo in meno con cache vuota e il 28,1–29,5% in meno con cache conservata](../benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/sync-vs-async.svg)
+
+È uno smoke provvisorio con un prompt e due token, non un claim generale. La
+lettura resta mmap/page-cache e manca una timeline comune degli eventi CUDA:
+il risultato non dimostra ancora overlap fisico dell'SSD o sovrapposizione
+temporale H2D/kernel. [Dati, grafico e limiti](../benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
 
 ## Avvio rapido
 
@@ -68,11 +74,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 
 ## Obiettivo successivo
 
-La prossima mossa seria non è K3: è confrontare in modo ripetuto il percorso
-sincrono e quello asincrono sugli stessi prompt e token, separare meglio cache
-expert e cache del sistema operativo e misurare con eventi/profiler se copie H2D
-e kernel si sovrappongono davvero. Per dimostrare anche l'overlap con l'SSD
-fisico servirà tracing del sistema operativo o un futuro backend direct-I/O.
+La prossima mossa seria non è K3: è estendere il confronto sync/async dai due
+token a generazioni più lunghe e ai cinque workload, poi misurare con
+eventi/profiler se copie H2D e kernel si sovrappongono davvero. Per dimostrare
+anche l'overlap con l'SSD fisico servirà tracing del sistema operativo o un
+futuro backend direct-I/O.
 
 ## Licenza
 

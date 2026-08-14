@@ -137,6 +137,18 @@ RAM or a faster SSD may change those terms, but neither guarantees a speedup.
 
 ## Evidence required before a speedup claim
 
+The first accepted measurement is a three-pair, two-token smoke on one RTX
+3080 Ti. Async used less wall time in all three pairs: the median paired
+sync/async ratio is `1.274x` with an empty dynamic GPU expert cache and `1.398x`
+on the immediate retained-cache repeat. The pair gate required identical token
+IDs and per-scope logical cache/transfer counters; peak allocated VRAM was also
+observed equal in these runs. See the
+[visual comparison and sanitized evidence](../benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
+
+That result is provisional. It does not satisfy the longer multi-workload or
+common CUDA-timeline requirements below and therefore is not a production
+speedup claim.
+
 Compare sync and async with the same checkpoint revision, prompts, token limits,
 cache policy, GPU-slot capacity and exact generated or teacher-forced token
 identities. Record repeated cold-dynamic-cache and retained-cache runs, while

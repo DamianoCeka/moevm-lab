@@ -54,8 +54,9 @@ the retained-cache pass is faster than the matching CPU-offload capture, while
 the empty-cache pass is slower. The async work is an opt-in, one-worker MVP over
 mmap/page-cache-backed storage; it is not proof of direct physical NVMe overlap.
 **Exit criterion still open:** one prompt, two generated tokens, uncontrolled
-OS-cache state and no accepted sync-versus-async study are insufficient to
-establish a repeatable improvement across workloads and sequence lengths.
+OS-cache state and only one accepted three-pair sync-versus-async smoke are
+insufficient to establish a repeatable improvement across workloads and
+sequence lengths.
 
 ## M4 — Storage-aware expert runtime
 

@@ -17,9 +17,11 @@
 - Bound benchmark JSON to a clean source commit and benchmark-script SHA-256.
 - Added a fail-closed sync/async pair comparator that requires identical source,
   output, cache-policy counters and transfer traffic before reporting timings.
+- Added sanitized three-pair async smoke evidence and a deterministic SVG that
+  shows every paired wall-time observation and its narrow evidence boundary.
 - This MVP does not establish physical NVMe overlap or an end-to-end speedup:
-  safetensors remains mmap/page-cache backed, and comparative runtime evidence
-  is still required.
+  safetensors remains mmap/page-cache backed, and longer multi-workload plus
+  profiler evidence is still required for a general performance claim.
 
 ## 0.3.0 — 2026-08-14
 

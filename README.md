@@ -41,8 +41,9 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
   synchronous paged forward path with exact tiny-model and real-expert checks.
 - An opt-in bounded async path with one I/O worker, pinned staging buffers, a
   dedicated CUDA H2D stream and per-slot readiness/use events. It pipelines
-  mmap/page-cache service and H2D with expert compute inside a routed layer;
-  it is not evidence of physical NVMe overlap or a measured speedup.
+  mmap/page-cache service and H2D with expert compute inside a routed layer.
+  That mechanism alone is not evidence of physical NVMe overlap or speedup;
+  the provisional paired measurement below is separate evidence.
 - A guarded full-model smoke harness that verifies generated tokens against a
   pinned CPU-offload reference before reporting memory and timing observations.
 
@@ -101,9 +102,18 @@ and a synchronous Python runtime. It is a feasibility and capacity signal, not
 a general 37% speedup claim. See the
 [sanitized runtime evidence](benchmarks/reference/paged-runtime-olmoe-p310-smoke/README.md).
 
-The unreleased async MVP is deliberately absent from that table. Run it only as
-a paired experiment against the default sync path; no async performance result
-has been accepted yet. The benchmark opt-in is:
+The first async comparison is now accepted as a **provisional paired smoke**,
+not as a general benchmark. Three alternating-order pairs kept output tokens
+and per-scope cache/transfer counters identical; peak VRAM was also observed
+equal. Async used less wall time in every pair: median `1.274x` sync/async with
+an empty dynamic expert cache and `1.398x` with retained cache state.
+
+![Six paired comparisons: async used 20.8–26.3% less wall time with empty cache and 28.1–29.5% less with retained cache](benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/sync-vs-async.svg)
+
+This covers one prompt and two teacher-forced tokens on one GPU. It does not
+prove physical NVMe activity, CUDA interval overlap or production throughput.
+See the [chart, exact table and evidence boundary](benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
+The benchmark opt-in is:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
@@ -239,7 +249,8 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
   one decode interval and uncontrolled OS page-cache state.
 - The opt-in async pipeline uses mmap-backed safetensors through the OS page
   cache. Its software overlap does not prove that physical NVMe reads overlap
-  compute, and no speedup is claimed before paired measurements are published.
+  compute. The published three-pair result is a provisional two-token smoke,
+  not a general speedup or production-throughput claim.
 - Current async tests establish bounded scheduling capability and numerical
   parity. They do not measure an H2D/compute interval intersection and therefore
   are not evidence that temporal overlap occurred on a particular run.
