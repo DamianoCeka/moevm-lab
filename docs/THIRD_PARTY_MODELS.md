@@ -4,6 +4,12 @@ MoEVM Lab does not redistribute model weights.
 
 ## OLMoE
 
+The Windows one-command demo may acquire the pinned checkpoint into the user's
+local Hugging Face cache. No model weight is committed to or redistributed by
+this repository; acquisition is revision-pinned, excludes known legacy weight
+formats, and the runtime loads only the three safetensors shards verified by
+project-held size and SHA-256 checks. See [One-command OLMoE demo](ONE_COMMAND_DEMO.md).
+
 The v0.2 M1 study uses `allenai/OLMoE-1B-7B-0924`, pinned to commit
 `bd1c52f59153f724c1ad11ca1791edc77bab3806`. Its model card and the official
 OLMoE repository identify the project as Apache License 2.0:

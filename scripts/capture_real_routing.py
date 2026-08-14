@@ -22,21 +22,15 @@ if str(_SRC) not in sys.path:
 
 from moevm.analysis import analyze_routing_trace, write_trace_analysis
 from moevm.config import load_config
+from moevm.olmoe_assets import (
+    PINNED_MODEL_ID,
+    PINNED_REVISION,
+    PINNED_SHARD_SHA256,
+)
 from moevm.trace import read_trace
 
-DEFAULT_MODEL = "allenai/OLMoE-1B-7B-0924"
-DEFAULT_REVISION = "bd1c52f59153f724c1ad11ca1791edc77bab3806"
-PINNED_SHARD_SHA256 = {
-    "model-00001-of-00003.safetensors": (
-        "5e3cff7e367794685c241169072c940d200918617d5e2813f1c387dff52d845e"
-    ),
-    "model-00002-of-00003.safetensors": (
-        "15ef5c730ee3cfed7199498788cd2faf337203fc74b529625e7502cdd759f4a7"
-    ),
-    "model-00003-of-00003.safetensors": (
-        "a9abac4ac1b55c9adabac721a02fa39971f103eea9a65c310972b1246de76e04"
-    ),
-}
+DEFAULT_MODEL = PINNED_MODEL_ID
+DEFAULT_REVISION = PINNED_REVISION
 
 
 def _parse_args() -> argparse.Namespace:

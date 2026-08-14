@@ -47,6 +47,41 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
 - A guarded full-model smoke harness that verifies generated tokens against a
   pinned CPU-offload reference before reporting memory and timing observations.
 
+## One-command OLMoE demo on Windows
+
+From a repository checkout, run:
+
+```powershell
+.\demo.cmd
+```
+
+The command detects a compatible NVIDIA GPU and existing cache, prepares an
+isolated Python 3.12 environment when needed, downloads the pinned public OLMoE
+checkpoint, verifies every weight shard by size and SHA-256, switches the model
+runtime offline, selects a safe per-layer GPU-cache size, and runs the bounded
+async MoEVM path. It finishes with a compact table containing model-load time,
+empty/retained-cache wall time and tokens/s, peak allocated/reserved VRAM, peak
+process working set and logical storage traffic. Results are kept under
+`results/demo/` and identical interrupted plans can be resumed without
+overwriting valid artifacts.
+
+Useful variants remain one command:
+
+```powershell
+.\demo.cmd -DryRun                         # read-only environment preview
+.\demo.cmd -Offline                        # require local environment and checkpoint
+.\demo.cmd -Compare                        # add a guarded local sync/async comparison
+.\demo.cmd -Yes                            # accept first-run install/download non-interactively
+.\demo.cmd -CachePath D:\MoEVM-cache       # place or reuse the model cache on another drive
+```
+
+Requirements are Windows, Python 3.12, an NVIDIA CUDA GPU with BF16 and at
+least 8 GiB VRAM, 16 GiB system RAM, and up to 35 GiB total free space for a
+conservative first setup. The weights stay in the local Hugging Face cache and
+retain their upstream license. This is an interactive up-to-two-token hardware
+demonstration, not publishable benchmark evidence or a general throughput claim.
+See the [one-command demo guide](docs/ONE_COMMAND_DEMO.md).
+
 ## Real-routing evidence
 
 M1 captured `allenai/OLMoE-1B-7B-0924` at the pinned revision

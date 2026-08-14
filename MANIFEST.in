@@ -2,6 +2,7 @@ include configs/*.toml
 include CHANGELOG.md
 include CITATION.cff
 include CONTRIBUTING.md
+include demo.cmd
 include LICENSE
 include NOTICE
 include SECURITY.md

@@ -134,6 +134,10 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         return {
             "schema_version": 1,
             "status": "ok",
+            "evidence": {
+                "label": "test benchmark evidence",
+                "publishable_benchmark_evidence": True,
+            },
             "source": {
                 "commit": "1" * 40,
                 "tree_clean": True,
@@ -158,6 +162,7 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             "model_load": {"static_preload_metrics": preload},
             "runtime": {
                 "device": "cuda:0",
+                "device_uuid": "test-uuid",
                 "device_name": "test GPU",
                 "policy": "lru",
                 "pipeline": pipeline,
@@ -228,6 +233,12 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
     def test_tampered_identity_tokens_and_metrics_are_rejected(self) -> None:
         mutators: dict[str, Callable[[dict[str, Any]], None]] = {
             "status": lambda row: row.__setitem__("status", "failed"),
+            "demo evidence": lambda row: row["evidence"].__setitem__(
+                "publishable_benchmark_evidence", False
+            ),
+            "demo provenance": lambda row: row["source"].__setitem__(
+                "provenance_mode", "demo"
+            ),
             "source commit": lambda row: row["source"].__setitem__("commit", "6" * 40),
             "dirty source": lambda row: row["source"].__setitem__("tree_clean", False),
             "script hash": lambda row: row["source"].__setitem__(

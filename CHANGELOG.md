@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a Windows `demo.cmd` entry point that detects hardware, prepares an
+  isolated pinned CUDA environment, acquires and verifies the supported OLMoE
+  checkpoint, selects a guarded GPU-cache capacity and prints real paged-runtime
+  memory and speed observations in one command.
+- Added resumable, create-only local demo plans and summaries, plus optional
+  fail-closed sync/async comparison and a no-write/no-network dry-run.
+- Added an explicit benchmark `--demo-mode` with best-effort Git provenance;
+  scientific benchmark mode remains clean-tree and fail-closed by default.
 - Added an opt-in bounded expert pipeline with one storage worker, pinned host
   staging, a dedicated CUDA H2D stream and per-slot CUDA events. The existing
   synchronous path remains the default.
