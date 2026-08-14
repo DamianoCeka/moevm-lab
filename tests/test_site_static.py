@@ -120,6 +120,29 @@ class StaticSiteTests(unittest.TestCase):
         self.assertRegex(css, r"\.bar-empty\s*\{\s*width:\s*74\.73%;")
         self.assertRegex(css, r"\.bar-retained\s*\{\s*width:\s*52\.63%;")
 
+    def test_memory_path_animation_is_css_only_and_motion_safe(self) -> None:
+        css = (SITE / "styles.css").read_text(encoding="utf-8")
+        for class_name in (
+            "expert-path-source",
+            "expert-path-cache",
+            "expert-path-active",
+        ):
+            self.assertEqual(1, self.html.count(class_name))
+        for keyframes in (
+            "@keyframes expert-source-pulse",
+            "@keyframes lower-packet",
+            "@keyframes expert-cache-pulse",
+            "@keyframes upper-packet",
+            "@keyframes expert-active-pulse",
+        ):
+            self.assertIn(keyframes, css)
+        reduced_motion = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+        self.assertIn(".memory-system .expert-path-source", reduced_motion)
+        self.assertIn("animation: none !important", reduced_motion)
+        self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s 1 both"), 7)
+        self.assertNotIn("will-change", css)
+        self.assertNotIn("<script", self.html.casefold())
+
     def test_no_private_paths_or_contact_claims(self) -> None:
         self.assertNotRegex(
             self.html, re.compile(r"[A-Za-z]:\\|C:/Users/", re.IGNORECASE)
