@@ -15,6 +15,8 @@
   leaves demand counters and LRU recency unchanged until the expert is actually
   consumed, preserving sync-versus-async cache-policy comparability.
 - Bound benchmark JSON to a clean source commit and benchmark-script SHA-256.
+- Added a fail-closed sync/async pair comparator that requires identical source,
+  output, cache-policy counters and transfer traffic before reporting timings.
 - This MVP does not establish physical NVMe overlap or an end-to-end speedup:
   safetensors remains mmap/page-cache backed, and comparative runtime evidence
   is still required.

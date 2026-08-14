@@ -1,0 +1,500 @@
+"""Fail-closed comparison of one sync/async paged-runtime benchmark pair."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+from pathlib import Path
+from typing import Any
+
+PASS_NAMES = ("cold_expert_cache", "repeat_retained_expert_cache")
+PRIMITIVES = (
+    "requests",
+    "hits",
+    "misses",
+    "evictions",
+    "storage_loads",
+    "transfer_loads",
+    "storage_bytes",
+    "host_to_device_bytes",
+    "coalesced_requests",
+    "admission_rejections",
+    "storage_failures",
+    "transfer_failures",
+)
+_CACHE_PRIMITIVES = PRIMITIVES[:8]
+_ZERO_COUNTERS = PRIMITIVES[8:]
+ADDITIVE_PRIMITIVES = PRIMITIVES
+ZERO_SAFETY_COUNTERS = (
+    "coalesced_requests",
+    "admission_rejections",
+    "storage_failures",
+    "transfer_failures",
+)
+NON_NEGATIVE_TIME_FIELDS = (
+    "storage_seconds",
+    "transfer_seconds",
+    "forward_seconds",
+    "storage_queue_seconds",
+    "demand_wait_seconds",
+)
+MAX_EXTRA_ASYNC_PEAK_VRAM_BYTES = 64 * 1024 * 1024
+RUNTIME_IDENTITY_FIELDS = (
+    "device",
+    "device_name",
+    "policy",
+    "capacity_scope",
+    "hotset_json",
+    "hotset_sha256",
+    "protected_hot_per_layer",
+)
+PASS_IDENTITY_FIELDS = (
+    "teacher_forced",
+    "generated_token_count",
+    "generated_ids",
+    "fed_token_ids",
+    "reference_prediction",
+)
+REFERENCE_IDENTITY_FIELDS = (
+    "available",
+    "first_mismatch_index",
+    "generated_token_ids",
+    "matched",
+    "matched_tokens",
+    "mode",
+    "sha256",
+    "source_generated_token_count",
+    "temperature",
+    "total_tokens",
+)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read valid JSON from {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return payload
+
+
+def _mapping(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    return value
+
+
+def _integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _number(value: object, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric")
+    result = float(value)
+    minimum_ok = result > 0.0 if positive else result >= 0.0
+    if not math.isfinite(result) or not minimum_ok:
+        comparison = "> 0" if positive else ">= 0"
+        raise ValueError(f"{name} must be finite and {comparison}")
+    return result
+
+
+def _require_equal(left: object, right: object, name: str) -> None:
+    if left != right:
+        raise ValueError(f"sync/async mismatch at {name}: {left!r} != {right!r}")
+
+
+def _metrics(payload: object, name: str, expert_bytes: int) -> dict[str, int]:
+    values = _mapping(payload, name)
+    result = {
+        field: _integer(values.get(field), f"{name}.{field}") for field in PRIMITIVES
+    }
+    if result["requests"] != result["hits"] + result["misses"]:
+        raise ValueError(f"{name}: requests must equal hits + misses")
+    if result["storage_bytes"] != result["storage_loads"] * expert_bytes:
+        raise ValueError(f"{name}: storage byte/load invariant failed")
+    if result["host_to_device_bytes"] != result["transfer_loads"] * expert_bytes:
+        raise ValueError(f"{name}: H2D byte/load invariant failed")
+    if result["coalesced_requests"] == 0 and (
+        result["misses"] != result["storage_loads"]
+        or result["misses"] != result["transfer_loads"]
+    ):
+        raise ValueError(f"{name}: zero-coalescing miss/load invariant failed")
+    for field in ZERO_SAFETY_COUNTERS:
+        if result[field] != 0:
+            raise ValueError(f"{name}.{field} must be zero for a comparable pair")
+    expected_hit_rate = (
+        result["hits"] / result["requests"] if result["requests"] else 0.0
+    )
+    hit_rate = _number(values.get("hit_rate"), f"{name}.hit_rate")
+    if not math.isclose(hit_rate, expected_hit_rate, rel_tol=0.0, abs_tol=1e-15):
+        raise ValueError(f"{name}: hit_rate is inconsistent with hits/requests")
+    for field in NON_NEGATIVE_TIME_FIELDS:
+        _number(values.get(field), f"{name}.{field}")
+    _integer(values.get("staging_waits"), f"{name}.staging_waits")
+    return result
+
+
+def _sum_metrics(rows: list[dict[str, int]]) -> dict[str, int]:
+    return {field: sum(row[field] for row in rows) for field in ADDITIVE_PRIMITIVES}
+
+
+def _require_metric_sum(
+    actual: dict[str, int], parts: list[dict[str, int]], name: str
+) -> None:
+    expected = _sum_metrics(parts)
+    for field in ADDITIVE_PRIMITIVES:
+        if actual[field] != expected[field]:
+            raise ValueError(
+                f"{name}.{field} is {actual[field]}, expected additive sum "
+                f"{expected[field]}"
+            )
+
+
+def _pass_metric_scopes(
+    payload: dict[str, Any], mode: str, pass_name: str, expert_bytes: int
+) -> tuple[list[tuple[str, dict[str, int]]], dict[str, int]]:
+    passes = _mapping(payload.get("passes"), f"{mode}.passes")
+    current = _mapping(passes.get(pass_name), f"{mode}.passes.{pass_name}")
+    prefill = _mapping(current.get("prefill"), f"{mode}.{pass_name}.prefill")
+    first = _mapping(current.get("first_token"), f"{mode}.{pass_name}.first_token")
+    decode = _mapping(current.get("decode"), f"{mode}.{pass_name}.decode")
+    per_token = decode.get("per_token")
+    if not isinstance(per_token, list):
+        raise ValueError(f"{mode}.{pass_name}.decode.per_token must be an array")
+
+    prefill_metrics = _metrics(
+        prefill.get("metrics"), f"{mode}.{pass_name}.prefill.metrics", expert_bytes
+    )
+    first_metrics = _metrics(
+        first.get("metrics"),
+        f"{mode}.{pass_name}.first_token.metrics",
+        expert_bytes,
+    )
+    if first_metrics != prefill_metrics:
+        raise ValueError(f"{mode}.{pass_name}: first-token metrics must equal prefill")
+
+    scopes: list[tuple[str, dict[str, int]]] = [
+        ("prefill", prefill_metrics),
+        ("first_token", first_metrics),
+    ]
+    additive_parts = [prefill_metrics]
+    for index, item in enumerate(per_token):
+        token = _mapping(item, f"{mode}.{pass_name}.decode.per_token[{index}]")
+        token_metrics = _metrics(
+            token.get("metrics"),
+            f"{mode}.{pass_name}.decode.per_token[{index}].metrics",
+            expert_bytes,
+        )
+        scopes.append((f"decode.per_token[{index}]", token_metrics))
+        additive_parts.append(token_metrics)
+
+    pass_metrics = _metrics(
+        current.get("metrics"), f"{mode}.{pass_name}.metrics", expert_bytes
+    )
+    _require_metric_sum(pass_metrics, additive_parts, f"{mode}.{pass_name}.metrics")
+    scopes.append(("metrics", pass_metrics))
+    return scopes, pass_metrics
+
+
+def _validate_mode(payload: dict[str, Any], mode: str) -> dict[str, Any]:
+    if payload.get("status") != "ok" or payload.get("schema_version") != 1:
+        raise ValueError(f"{mode}: expected status=ok and schema_version=1")
+    source = _mapping(payload.get("source"), f"{mode}.source")
+    if source.get("tree_clean") is not True:
+        raise ValueError(f"{mode}: benchmark source must be a clean Git tree")
+    commit = source.get("commit")
+    script_hash = source.get("benchmark_script_sha256")
+    if not isinstance(commit, str) or len(commit) != 40:
+        raise ValueError(f"{mode}: source.commit must be a full Git commit")
+    if not isinstance(script_hash, str) or len(script_hash) != 64:
+        raise ValueError(f"{mode}: benchmark script SHA-256 is missing")
+
+    runtime = _mapping(payload.get("runtime"), f"{mode}.runtime")
+    if runtime.get("pipeline") != mode:
+        raise ValueError(f"{mode}: runtime.pipeline must equal {mode!r}")
+    budget = _mapping(runtime.get("budget"), f"{mode}.runtime.budget")
+    if budget.get("pipeline") != mode:
+        raise ValueError(f"{mode}: runtime.budget.pipeline must equal {mode!r}")
+    expert_bytes = _integer(budget.get("expert_bytes"), f"{mode}.expert_bytes")
+    if expert_bytes == 0:
+        raise ValueError(f"{mode}: expert_bytes must be positive")
+
+    model_load = _mapping(payload.get("model_load"), f"{mode}.model_load")
+    preload = _metrics(
+        model_load.get("static_preload_metrics"),
+        f"{mode}.model_load.static_preload_metrics",
+        expert_bytes,
+    )
+    pass_results: dict[str, dict[str, Any]] = {}
+    final_parts = [preload]
+    for pass_name in PASS_NAMES:
+        scopes, pass_metrics = _pass_metric_scopes(
+            payload, mode, pass_name, expert_bytes
+        )
+        current = _mapping(
+            _mapping(payload["passes"], f"{mode}.passes").get(pass_name),
+            f"{mode}.{pass_name}",
+        )
+        wall = _number(
+            current.get("total_wall_seconds"),
+            f"{mode}.{pass_name}.total_wall_seconds",
+            positive=True,
+        )
+        pass_results[pass_name] = {
+            "wall_seconds": wall,
+            "scopes": scopes,
+            "metrics": pass_metrics,
+        }
+        final_parts.append(pass_metrics)
+
+    final_metrics = _metrics(
+        runtime.get("final_metrics"), f"{mode}.runtime.final_metrics", expert_bytes
+    )
+    _require_metric_sum(final_metrics, final_parts, f"{mode}.runtime.final_metrics")
+
+    staging_slots = _integer(budget.get("staging_slots"), f"{mode}.staging_slots")
+    peak_staging = _integer(
+        _mapping(runtime.get("final_metrics"), f"{mode}.final_metrics").get(
+            "peak_staging_in_use"
+        ),
+        f"{mode}.peak_staging_in_use",
+    )
+    if peak_staging > staging_slots:
+        raise ValueError(f"{mode}: peak staging use exceeds the staging budget")
+    pending_peak = _integer(
+        _mapping(runtime.get("final_metrics"), f"{mode}.final_metrics").get(
+            "pending_loads_peak"
+        ),
+        f"{mode}.pending_loads_peak",
+    )
+    if pending_peak > staging_slots + 1:
+        raise ValueError(f"{mode}: pending-load peak exceeds the bounded pipeline")
+    return {
+        "source": source,
+        "runtime": runtime,
+        "budget": budget,
+        "expert_bytes": expert_bytes,
+        "preload": preload,
+        "passes": pass_results,
+        "final_metrics": final_metrics,
+    }
+
+
+def _compare_identity(sync: dict[str, Any], async_: dict[str, Any]) -> None:
+    _require_equal(sync.get("source"), async_.get("source"), "source")
+    _require_equal(sync.get("environment"), async_.get("environment"), "environment")
+    _require_equal(sync.get("workload"), async_.get("workload"), "workload")
+
+    sync_model = dict(_mapping(sync.get("model"), "sync.model"))
+    async_model = dict(_mapping(async_.get("model"), "async.model"))
+    sync_model.pop("hash_verification_seconds", None)
+    async_model.pop("hash_verification_seconds", None)
+    _require_equal(sync_model, async_model, "model identity")
+
+    sync_runtime = _mapping(sync.get("runtime"), "sync.runtime")
+    async_runtime = _mapping(async_.get("runtime"), "async.runtime")
+    for field in RUNTIME_IDENTITY_FIELDS:
+        _require_equal(
+            sync_runtime.get(field), async_runtime.get(field), f"runtime.{field}"
+        )
+    sync_budget = dict(_mapping(sync_runtime.get("budget"), "sync.runtime.budget"))
+    async_budget = dict(_mapping(async_runtime.get("budget"), "async.runtime.budget"))
+    sync_budget.pop("pipeline", None)
+    async_budget.pop("pipeline", None)
+    _require_equal(sync_budget, async_budget, "runtime.budget")
+
+    for pass_name in PASS_NAMES:
+        sync_pass = _mapping(
+            _mapping(sync.get("passes"), "sync.passes").get(pass_name),
+            f"sync.{pass_name}",
+        )
+        async_pass = _mapping(
+            _mapping(async_.get("passes"), "async.passes").get(pass_name),
+            f"async.{pass_name}",
+        )
+        for field in PASS_IDENTITY_FIELDS:
+            _require_equal(
+                sync_pass.get(field),
+                async_pass.get(field),
+                f"passes.{pass_name}.{field}",
+            )
+        for scope in ("prefill", "first_token"):
+            left = _mapping(sync_pass.get(scope), f"sync.{pass_name}.{scope}")
+            right = _mapping(async_pass.get(scope), f"async.{pass_name}.{scope}")
+            for field in (
+                "input_tokens",
+                "index",
+                "fed_token_id",
+                "token_id",
+                "source",
+            ):
+                if field in left or field in right:
+                    _require_equal(
+                        left.get(field),
+                        right.get(field),
+                        f"{pass_name}.{scope}.{field}",
+                    )
+        sync_tokens = _mapping(sync_pass.get("decode"), "sync.decode").get("per_token")
+        async_tokens = _mapping(async_pass.get("decode"), "async.decode").get(
+            "per_token"
+        )
+        if not isinstance(sync_tokens, list) or not isinstance(async_tokens, list):
+            raise ValueError(f"{pass_name}: decode.per_token must be arrays")
+        _require_equal(len(sync_tokens), len(async_tokens), f"{pass_name}.decode count")
+        for index, (left, right) in enumerate(
+            zip(sync_tokens, async_tokens, strict=True)
+        ):
+            left_map = _mapping(left, f"sync.{pass_name}.decode[{index}]")
+            right_map = _mapping(right, f"async.{pass_name}.decode[{index}]")
+            for field in (
+                "index",
+                "predicted_token_id",
+                "fed_token_id",
+                "token_id",
+                "matched_forced_token",
+                "source",
+            ):
+                _require_equal(
+                    left_map.get(field),
+                    right_map.get(field),
+                    f"{pass_name}.decode[{index}].{field}",
+                )
+
+    sync_reference = _mapping(sync.get("reference_comparison"), "sync.reference")
+    async_reference = _mapping(async_.get("reference_comparison"), "async.reference")
+    for field in REFERENCE_IDENTITY_FIELDS:
+        _require_equal(
+            sync_reference.get(field),
+            async_reference.get(field),
+            f"reference_comparison.{field}",
+        )
+
+
+def compare_reports(sync: dict[str, Any], async_: dict[str, Any]) -> dict[str, Any]:
+    """Validate two already-loaded reports and return a paired summary."""
+    _compare_identity(sync, async_)
+    validated_sync = _validate_mode(sync, "sync")
+    validated_async = _validate_mode(async_, "async")
+    _require_equal(
+        validated_sync["expert_bytes"],
+        validated_async["expert_bytes"],
+        "expert_bytes",
+    )
+    _require_equal(validated_sync["preload"], validated_async["preload"], "preload")
+    _require_equal(
+        validated_sync["final_metrics"],
+        validated_async["final_metrics"],
+        "runtime.final_metrics",
+    )
+
+    comparisons: dict[str, Any] = {}
+    for pass_name in PASS_NAMES:
+        sync_pass = validated_sync["passes"][pass_name]
+        async_pass = validated_async["passes"][pass_name]
+        _require_equal(
+            sync_pass["scopes"], async_pass["scopes"], f"{pass_name}.metric scopes"
+        )
+        sync_memory = _mapping(
+            _mapping(sync["passes"], "sync.passes")[pass_name].get("cuda_memory"),
+            f"sync.{pass_name}.cuda_memory",
+        )
+        async_memory = _mapping(
+            _mapping(async_["passes"], "async.passes")[pass_name].get("cuda_memory"),
+            f"async.{pass_name}.cuda_memory",
+        )
+        sync_peak = _integer(
+            sync_memory.get("peak_allocated_bytes"),
+            f"sync.{pass_name}.peak_allocated_bytes",
+        )
+        async_peak = _integer(
+            async_memory.get("peak_allocated_bytes"),
+            f"async.{pass_name}.peak_allocated_bytes",
+        )
+        if async_peak > sync_peak + MAX_EXTRA_ASYNC_PEAK_VRAM_BYTES:
+            raise ValueError(
+                f"{pass_name}: async peak VRAM exceeds the 64 MiB comparison guard"
+            )
+        sync_wall = sync_pass["wall_seconds"]
+        async_wall = async_pass["wall_seconds"]
+        comparisons[pass_name] = {
+            "sync_wall_seconds": sync_wall,
+            "async_wall_seconds": async_wall,
+            "sync_over_async_ratio": sync_wall / async_wall,
+            "saving_seconds": sync_wall - async_wall,
+            "saving_fraction": (sync_wall - async_wall) / sync_wall,
+            "sync_peak_allocated_vram_bytes": sync_peak,
+            "async_peak_allocated_vram_bytes": async_peak,
+            "metrics": sync_pass["metrics"],
+        }
+
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "source_commit": validated_sync["source"]["commit"],
+        "benchmark_script_sha256": validated_sync["source"]["benchmark_script_sha256"],
+        "exact_invariants": True,
+        "passes": comparisons,
+        "limitations": [
+            "This validates one paired two-token smoke, not a general speedup claim.",
+            "Timing can still vary with OS page-cache, clocks, and background load.",
+            "Counter equality does not itself prove physical NVMe or CUDA interval overlap.",
+        ],
+    }
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def compare_pair(sync_path: Path, async_path: Path) -> dict[str, Any]:
+    report = compare_reports(_load_json(sync_path), _load_json(async_path))
+    report["inputs"] = {
+        "sync": {
+            "path": str(sync_path.resolve()),
+            "sha256": _sha256(sync_path),
+        },
+        "async": {
+            "path": str(async_path.resolve()),
+            "sha256": _sha256(async_path),
+        },
+    }
+    return report
+
+
+def _write_create_only(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="\n") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("sync", type=Path, help="sync result JSON")
+    parser.add_argument("async_path", type=Path, help="async result JSON")
+    parser.add_argument("--output", type=Path, help="optional create-only report JSON")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        report = compare_pair(args.sync, args.async_path)
+        if args.output is not None:
+            _write_create_only(args.output, report)
+        print(json.dumps(report, indent=2, sort_keys=True))
+    except ValueError as exc:
+        print(f"comparison failed: {exc}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
