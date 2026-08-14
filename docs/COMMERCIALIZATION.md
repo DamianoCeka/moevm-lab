@@ -22,7 +22,7 @@ GitHub is distribution and proof, not the business by itself.
 ## Plausible product layers
 
 ```text
-Community core
+Community core (Apache-2.0)
   trace tools, metrics, basic cache and single-node backend
 
 Professional

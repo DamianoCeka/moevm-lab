@@ -1,3 +1,15 @@
+MoEVM Lab
+Copyright 2026 Damiano Ceka
+
+Portions of src/moevm/paged_runtime.py are adapted and modified from Hugging
+Face Transformers code originally copyright 2023 Mistral AI and the HuggingFace
+Inc. team, licensed under the Apache License, Version 2.0.
+
+The reference routing traces and token identifiers were produced with the
+separately distributed allenai/OLMoE-1B-7B-0924 model. The checkpoint and model
+weights are not included or relicensed by MoEVM Lab. See
+docs/THIRD_PARTY_MODELS.md for provenance and exact revision information.
+
 MoEVM Lab is an independent research project by Damiano Ceka.
 
 It is not affiliated with, endorsed by, or sponsored by Moonshot AI, the Kimi

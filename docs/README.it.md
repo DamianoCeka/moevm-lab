@@ -62,3 +62,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 La prossima mossa seria non è K3: è ripetere il benchmark su più prompt e decode
 più lunghi, separare meglio cache expert e cache del sistema operativo, poi
 sovrapporre letture, copie H2D e calcolo con I/O asincrono e stream CUDA.
+
+## Licenza
+
+Il codice e la documentazione di proprietà del progetto sono distribuiti con
+licenza Apache 2.0; v0.3.0 è la prima release preparata con questa licenza.
+Modelli, pesi, output derivati e strumenti di terze parti
+mantengono le rispettive licenze; nessun peso del modello è incluso nel
+repository. I vecchi tag e gli archivi già distribuiti mantengono invece la
+licenza presente al momento della loro pubblicazione.

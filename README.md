@@ -4,7 +4,7 @@
 
 MoEVM Lab investigates whether a large sparse MoE can use VRAM as a small, predictive working set while colder expert weights live in RAM and NVMe storage.
 
-> **Current status: v0.2.0 plus unreleased M2/M3 research work.** The lab now
+> **Current status: v0.3.0.** The lab now
 > captures real routing, replays it against measured workstation hardware, and
 > executes a bounded synchronous expert-paging prototype on the full small
 > OLMoE checkpoint. It does not execute Kimi K3 weights or claim production
@@ -212,6 +212,14 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 
 ## Release status and license
 
-This is a private pre-release prototype. The code is currently **all rights reserved** while the public/open-core and IP strategy is evaluated. Do not make the repository public before reading [IP and release notes](docs/IP_AND_RELEASE.md).
+MoEVM Lab is open source under the [Apache License 2.0](LICENSE). The license
+applies to the current project-owned source, documentation and original
+benchmark organization. Version 0.3.0 is the first release prepared under
+Apache-2.0. Historical tags and archives retain the license file
+with which they were originally distributed.
 
-Kimi K3 and vLLM are third-party projects. MoEVM Lab is not affiliated with Moonshot AI or the vLLM project and includes no model weights.
+Kimi K3, OLMoE, Transformers, vLLM and other referenced projects remain
+third-party works under their own licenses. MoEVM Lab includes no model weights
+and does not relicense third-party checkpoints or underlying material. See
+[NOTICE](NOTICE), [third-party provenance](docs/THIRD_PARTY_MODELS.md) and the
+[IP and release notes](docs/IP_AND_RELEASE.md).

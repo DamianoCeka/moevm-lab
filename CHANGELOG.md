@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-08-14
 
+- Relicensed the current community source tree under Apache License 2.0, added
+  explicit inbound contribution terms and preserved Transformers attribution.
 - Added read-only storage and CUDA transfer benchmarks plus a reproducible
   Crucial P2/P310 and RTX 3080 Ti hardware evidence package.
 - Added per-expert fixed-latency modeling; the measured P310 profile moves the

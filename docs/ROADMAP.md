@@ -84,4 +84,5 @@ a repeatable improvement across workloads and sequence lengths.
 - [ ] auto-tuner for hardware and workload;
 - [ ] telemetry and profiling dashboard;
 - [ ] enterprise deployment and support model;
-- [ ] public license/open-core decision.
+- [x] license the community source tree under Apache-2.0; evaluate optional
+  commercial layers separately.

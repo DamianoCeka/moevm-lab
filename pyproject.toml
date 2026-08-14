@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moevm-lab"
-version = "0.2.0"
+version = "0.3.0"
 description = "Research simulator for expert-aware memory virtualization in sparse Mixture-of-Experts inference."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "LicenseRef-Proprietary"
+license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [
   { name = "Damiano Ceka" }

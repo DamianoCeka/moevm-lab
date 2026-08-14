@@ -1,8 +1,13 @@
 # Contributing
 
-MoEVM Lab is currently a private pre-release prototype. Reproducible bug reports and research proposals are welcome from repository collaborators, but external pull requests are not yet accepted because the public license and contributor policy have not been selected.
+Reproducible bug reports, research proposals and focused pull requests are
+welcome. By intentionally submitting a contribution for inclusion in MoEVM
+Lab, you agree to license it under the Apache License, Version 2.0, without
+additional terms or conditions, as described in Section 5 of that license.
+Only submit work that you wrote or have the legal right to contribute. Identify
+and preserve the provenance and license of any third-party material.
 
-For internal development:
+For development:
 
 1. create a focused branch;
 2. add or update tests;
