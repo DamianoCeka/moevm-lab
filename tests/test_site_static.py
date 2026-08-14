@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+import re
+import unittest
+from html.parser import HTMLParser
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SITE = ROOT / "site"
+
+
+class _PageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: set[str] = set()
+        self.hrefs: list[str] = []
+        self.title_parts: list[str] = []
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if values.get("id"):
+            self.ids.add(str(values["id"]))
+        if tag == "a" and values.get("href"):
+            self.hrefs.append(str(values["href"]))
+        if tag == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title_parts.append(data)
+
+
+class StaticSiteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = (SITE / "index.html").read_text(encoding="utf-8")
+        cls.normalized_html = re.sub(r"\s+", " ", cls.html.casefold())
+        cls.parser = _PageParser()
+        cls.parser.feed(cls.html)
+
+    def test_required_assets_exist(self) -> None:
+        for name in (
+            "index.html",
+            "styles.css",
+            "favicon.svg",
+            "robots.txt",
+            "sitemap.xml",
+            "vercel.json",
+        ):
+            self.assertTrue((SITE / name).is_file(), name)
+
+    def test_internal_anchors_resolve(self) -> None:
+        anchors = [href[1:] for href in self.parser.hrefs if href.startswith("#")]
+        self.assertTrue(anchors)
+        self.assertEqual(
+            [], sorted(anchor for anchor in anchors if anchor not in self.parser.ids)
+        )
+
+    def test_public_links_are_https(self) -> None:
+        external = [href for href in self.parser.hrefs if not href.startswith("#")]
+        self.assertTrue(external)
+        self.assertTrue(all(href.startswith("https://") for href in external))
+
+    def test_page_has_no_tracking_or_form_surface(self) -> None:
+        lowered = self.html.lower()
+        self.assertNotIn("<script", lowered)
+        self.assertNotIn("<form", lowered)
+        self.assertNotRegex(
+            lowered, r"google-analytics|googletagmanager|posthog|segment\.com"
+        )
+
+    def test_claim_scope_is_visible_with_measurements(self) -> None:
+        for text in (
+            "1.338×",
+            "1.900×",
+            "21.33%",
+            "5 prompts",
+            "16 teacher-forced tokens each",
+            "no concurrency",
+            "not a general serving claim",
+        ):
+            self.assertIn(text.casefold(), self.normalized_html)
+
+    def test_title_and_language_are_set(self) -> None:
+        self.assertIn('<html lang="en">', self.html)
+        self.assertIn("MoEVM Lab", "".join(self.parser.title_parts))
+
+    def test_vercel_security_headers_are_fail_closed(self) -> None:
+        config = json.loads((SITE / "vercel.json").read_text(encoding="utf-8"))
+        headers = {
+            item["key"]: item["value"] for item in config["headers"][0]["headers"]
+        }
+        csp = headers["Content-Security-Policy"]
+        self.assertIn("script-src 'none'", csp)
+        self.assertIn("connect-src 'none'", csp)
+        self.assertIn("form-action 'none'", csp)
+        self.assertIn("style-src 'self'", csp)
+        self.assertNotRegex(self.html, r"<[^>]+\sstyle=")
+        self.assertEqual("DENY", headers["X-Frame-Options"])
+
+    def test_demo_requirements_match_guarded_resource_policy(self) -> None:
+        for text in (
+            "CUDA 13-compatible",
+            "8 GiB VRAM total / 4 GiB free",
+            "6 GiB recommended",
+            "16 GiB RAM / 8 GiB available",
+            "up to 35 GiB disk",
+        ):
+            self.assertIn(text.casefold(), self.normalized_html)
+
+    def test_chart_widths_live_in_external_css(self) -> None:
+        css = (SITE / "styles.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.bar-baseline\s*\{\s*width:\s*100%;")
+        self.assertRegex(css, r"\.bar-empty\s*\{\s*width:\s*74\.73%;")
+        self.assertRegex(css, r"\.bar-retained\s*\{\s*width:\s*52\.63%;")
+
+    def test_no_private_paths_or_contact_claims(self) -> None:
+        self.assertNotRegex(
+            self.html, re.compile(r"[A-Za-z]:\\|C:/Users/", re.IGNORECASE)
+        )
+        self.assertNotIn("hello@moevmlab.com", self.html.casefold())
+
+
+if __name__ == "__main__":
+    unittest.main()
