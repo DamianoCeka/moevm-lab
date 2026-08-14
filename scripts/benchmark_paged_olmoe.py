@@ -11,6 +11,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import subprocess
 import sys
 import time
 from contextlib import ExitStack
@@ -788,6 +789,32 @@ def _package_versions() -> dict[str, str]:
     return {name: importlib.metadata.version(name) for name in packages}
 
 
+def _source_provenance() -> dict[str, str | bool]:
+    def git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ("git", *arguments),
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    if len(commit) != 40 or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise RuntimeError("Git returned an invalid source commit")
+    status = git("status", "--porcelain", "--untracked-files=all")
+    script_path = Path(__file__).resolve()
+    return {
+        "commit": commit,
+        "tree_clean": not bool(status),
+        "benchmark_script": script_path.relative_to(_REPO_ROOT).as_posix(),
+        "benchmark_script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
+    }
+
+
 def _total_checkpoint_bytes(snapshot: Path) -> int:
     payload = json.loads(
         (snapshot / "model.safetensors.index.json").read_text(encoding="utf-8")
@@ -839,6 +866,9 @@ def _write_json_create_only(path: Path, payload: object) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     _validate_args(args)
+    source = _source_provenance()
+    if not source["tree_clean"]:
+        raise RuntimeError("benchmark evidence requires a clean Git working tree")
     prompt = _resolve_prompt(args)
     snapshot = _validate_snapshot(Path(args.snapshot))
     output_path = Path(args.output).expanduser().resolve()
@@ -1237,6 +1267,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "platform": platform.platform(),
                     "packages": _package_versions(),
                 },
+                "source": source,
             }
     finally:
         if "torch" in locals() and torch.cuda.is_available():

@@ -12,6 +12,7 @@
   idempotent `close()`.
 - Split logical cache misses from coalesced storage and transfer operations in
   benchmark metrics, with fail-fast bounded-queue admission.
+- Bound benchmark JSON to a clean source commit and benchmark-script SHA-256.
 - This MVP does not establish physical NVMe overlap or an end-to-end speedup:
   safetensors remains mmap/page-cache backed, and comparative runtime evidence
   is still required.

@@ -143,6 +143,11 @@ metrics explain the result but must not be summed as though their intervals were
 serial. A physical NVMe-overlap claim requires separate OS/device tracing or a
 future direct-I/O backend in addition to runtime timings.
 
+The harness refuses to start from a dirty Git tree and records both the full
+source commit and the benchmark-script SHA-256 in every JSON result. Commit the
+reviewed implementation before collecting evidence; ignored result files do not
+make the tree dirty.
+
 The current tests verify bounded scheduling capability, event/lease ownership
 and sync-versus-async numerical parity. They do not measure intersecting H2D and
 compute intervals on a common device timeline, so passing tests alone is not

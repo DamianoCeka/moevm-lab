@@ -312,6 +312,17 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertFalse(_HARNESS._is_cuda_oom(RuntimeError("CPU out of memory")))
         self.assertFalse(_HARNESS._is_cuda_oom(ValueError("bad input")))
 
+    def test_source_provenance_binds_commit_and_script_hash(self) -> None:
+        source = _HARNESS._source_provenance()
+
+        self.assertRegex(str(source["commit"]), r"^[0-9a-f]{40}$")
+        self.assertIsInstance(source["tree_clean"], bool)
+        self.assertEqual(source["benchmark_script"], "scripts/benchmark_paged_olmoe.py")
+        self.assertEqual(
+            source["benchmark_script_sha256"],
+            hashlib.sha256(_SCRIPT.read_bytes()).hexdigest(),
+        )
+
     @unittest.skipUnless(torch is not None, "requires torch for manual decode contract")
     def test_manual_two_token_decode_uses_fresh_kv_and_extended_mask(self) -> None:
         zero_metrics = SimpleNamespace(
