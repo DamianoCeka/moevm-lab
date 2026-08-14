@@ -13,8 +13,12 @@ OLMoE repository identify the project as Apache License 2.0:
 - [OLMoE paper](https://arxiv.org/abs/2409.02060)
 
 Only derived routing decisions, top-k probabilities and controlled generated
-token IDs are stored in this private research repository. The checkpoint remains
-in the local Hugging Face cache and is excluded from Git.
+token IDs are stored in this repository. Those short token-ID sequences can be
+decoded and may reflect model output or model training material. They are
+included only for reproducibility. MoEVM Lab makes no ownership or licensing
+claim over decoded underlying text; the project's Apache-2.0 license grants
+rights only to material the project is authorized to license. The checkpoint
+remains in the local Hugging Face cache and is excluded from Git.
 
 ## Capture stack
 
@@ -29,3 +33,10 @@ on the host GPU and driver.
 
 These projects retain their respective copyrights and licenses. Their inclusion
 here is attribution and workflow documentation, not relicensing.
+
+## Adapted Transformers code
+
+The expert execution loop in `src/moevm/paged_runtime.py` is adapted and
+modified from the Apache-2.0-licensed `OlmoeExperts`/`MixtralExperts` forward
+implementation in Hugging Face Transformers 5.14.1. The relevant upstream
+copyright notice is preserved in that source file and in the project NOTICE.

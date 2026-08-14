@@ -2,9 +2,10 @@ cff-version: 1.2.0
 title: "MoEVM Lab"
 message: "Please cite this software if it contributes to published research."
 type: software
+license: Apache-2.0
 authors:
   - family-names: "Ceka"
     given-names: "Damiano"
-version: 0.2.0
-date-released: 2026-08-09
+version: 0.3.0
+date-released: 2026-08-14
 repository-code: "https://github.com/DamianoCeka/moevm-lab"
