@@ -43,16 +43,19 @@ been shown to track end-to-end measurements within a documented error band.
 - [x] per-layer expert slot map and bounded transactional staging path;
 - [x] bounded pinned-memory staging buffer;
 - [ ] pinned host expert cache;
-- [ ] asynchronous copies with CUDA streams/events;
+- [x] opt-in asynchronous-copy MVP with a dedicated CUDA stream and per-slot
+  events;
 - [x] exact tiny-model logits/generation tests and a full-model greedy-token
   parity gate;
 - [x] first controlled full-model tokens/s and VRAM smoke measurement;
 
 The first LRU32 OLMoE smoke reduces observed peak allocated VRAM by 21.34% and
 the retained-cache pass is faster than the matching CPU-offload capture, while
-the empty-cache pass is slower. **Exit criterion still open:** one prompt, two
-generated tokens and uncontrolled OS-cache state are insufficient to establish
-a repeatable improvement across workloads and sequence lengths.
+the empty-cache pass is slower. The async work is an opt-in, one-worker MVP over
+mmap/page-cache-backed storage; it is not proof of direct physical NVMe overlap.
+**Exit criterion still open:** one prompt, two generated tokens, uncontrolled
+OS-cache state and no accepted sync-versus-async study are insufficient to
+establish a repeatable improvement across workloads and sequence lengths.
 
 ## M4 — Storage-aware expert runtime
 

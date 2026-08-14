@@ -13,6 +13,7 @@ import os
 import platform
 import sys
 import time
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,10 +52,27 @@ _INTEGER_METRICS = (
     "storage_bytes",
     "host_to_device_bytes",
 )
+_PIPELINE_INTEGER_METRICS = (
+    "coalesced_requests",
+    "storage_loads",
+    "transfer_loads",
+    "admission_rejections",
+    "storage_failures",
+    "transfer_failures",
+    "staging_waits",
+)
+_PIPELINE_HIGH_WATER_METRICS = (
+    "pending_loads_peak",
+    "peak_staging_in_use",
+)
 _TIME_METRICS = (
     "storage_seconds",
     "transfer_seconds",
     "forward_seconds",
+)
+_PIPELINE_TIME_METRICS = (
+    "storage_queue_seconds",
+    "demand_wait_seconds",
 )
 
 
@@ -92,6 +110,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workload-id", default="single-smoke")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--policy", choices=("lru", "hybrid"), default="lru")
+    parser.add_argument(
+        "--pipeline",
+        choices=("sync", "async"),
+        default="sync",
+        help=(
+            "Expert data path. Async uses one bounded storage worker and a "
+            "dedicated CUDA H2D stream; sync preserves the v0.3.0 behavior."
+        ),
+    )
     parser.add_argument(
         "--slots-per-layer",
         type=_bounded_integer("slots-per-layer", 1, 48),
@@ -149,6 +176,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--hotset-json is only valid with --policy hybrid")
     if args.teacher_force_reference and not args.reference_metadata:
         raise ValueError("--teacher-force-reference requires --reference-metadata")
+    if args.pipeline == "async" and args.staging_slots < 2:
+        raise ValueError("async pipeline requires at least two staging slots")
     output_path = Path(args.output).expanduser()
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite output: {output_path}")
@@ -375,6 +404,20 @@ def _metrics_payload(metrics: Any) -> dict[str, int | float]:
         name: int(getattr(metrics, name)) for name in _INTEGER_METRICS
     }
     payload.update({name: float(getattr(metrics, name)) for name in _TIME_METRICS})
+    payload.update(
+        {
+            name: int(getattr(metrics, name))
+            for name in (*_PIPELINE_INTEGER_METRICS, *_PIPELINE_HIGH_WATER_METRICS)
+            if hasattr(metrics, name)
+        }
+    )
+    payload.update(
+        {
+            name: float(getattr(metrics, name))
+            for name in _PIPELINE_TIME_METRICS
+            if hasattr(metrics, name)
+        }
+    )
     requests = int(payload["requests"])
     payload["hit_rate"] = 0.0 if requests == 0 else int(payload["hits"]) / requests
     return payload
@@ -391,6 +434,20 @@ def _metrics_delta(after: Any, before: Any) -> dict[str, int | float]:
             for name in _TIME_METRICS
         }
     )
+    payload.update(
+        {
+            name: int(getattr(after, name)) - int(getattr(before, name))
+            for name in _PIPELINE_INTEGER_METRICS
+            if hasattr(after, name) and hasattr(before, name)
+        }
+    )
+    payload.update(
+        {
+            name: float(getattr(after, name)) - float(getattr(before, name))
+            for name in _PIPELINE_TIME_METRICS
+            if hasattr(after, name) and hasattr(before, name)
+        }
+    )
     requests = int(payload["requests"])
     payload["hit_rate"] = 0.0 if requests == 0 else int(payload["hits"]) / requests
     return payload
@@ -403,12 +460,21 @@ def _validate_metric_delta(
 ) -> None:
     if int(payload["requests"]) != int(payload["hits"]) + int(payload["misses"]):
         raise RuntimeError("cache metric invariant failed: requests != hits + misses")
-    expected_bytes = int(payload["misses"]) * expert_bytes
-    if int(payload["storage_bytes"]) != expected_bytes:
+    storage_loads = int(payload.get("storage_loads", payload["misses"]))
+    transfer_loads = int(payload.get("transfer_loads", payload["misses"]))
+    if storage_loads > int(payload["misses"]):
+        raise RuntimeError("cache metric invariant failed: storage loads exceed misses")
+    if transfer_loads > storage_loads:
+        raise RuntimeError(
+            "cache metric invariant failed: transfers exceed storage loads"
+        )
+    expected_storage_bytes = storage_loads * expert_bytes
+    if int(payload["storage_bytes"]) != expected_storage_bytes:
         raise RuntimeError("cache metric invariant failed for logical storage bytes")
-    if int(payload["host_to_device_bytes"]) != expected_bytes:
+    expected_transfer_bytes = transfer_loads * expert_bytes
+    if int(payload["host_to_device_bytes"]) != expected_transfer_bytes:
         raise RuntimeError("cache metric invariant failed for logical H2D bytes")
-    if any(float(payload[name]) < 0.0 for name in (*_INTEGER_METRICS, *_TIME_METRICS)):
+    if any(float(value) < 0.0 for name, value in payload.items() if name != "hit_rate"):
         raise RuntimeError("cache metric delta cannot be negative")
 
 
@@ -831,7 +897,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     cache = None
     try:
         total_load_started = time.perf_counter()
-        with SafetensorExpertStore(snapshot) as store:
+        with ExitStack() as stack:
+            store = stack.enter_context(SafetensorExpertStore(snapshot))
             config_started = time.perf_counter()
             config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
             tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
@@ -876,6 +943,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "cache_bytes": cache_bytes,
                 "staging_slots": args.staging_slots,
                 "staging_host_bytes": args.staging_slots * store.spec.size_bytes,
+                "pipeline": args.pipeline,
                 "non_expert_checkpoint_bytes": non_expert_bytes,
                 "expected_weight_vram_bytes": expected_weight_bytes,
                 "safety_margin_bytes": _VRAM_SAFETY_MARGIN_BYTES,
@@ -902,7 +970,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 static_keys=static_keys,
                 staging_slots=args.staging_slots,
                 pin_staging=True,
+                pipeline_mode=args.pipeline,
             )
+            stack.callback(cache.close)
             runtime = PagedExpertRuntime(cache)
             attach_transformers_olmoe_runtime(model, runtime)
             cache_allocation_seconds = time.perf_counter() - cache_started
@@ -1039,6 +1109,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
             # No expert reads occur after the two inference passes.  The helper
             # releases persistent mappings before the independent integrity gate.
+            cache.wait_idle()
+            cache.close()
             verification_started = time.perf_counter()
             shard_verification = _close_store_and_verify_pinned_shards(
                 store,
@@ -1098,7 +1170,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         "Model loading and mmap page faults still make OS page-cache state uncontrolled.",
                         "Cold means an empty dynamic expert cache, not a cold NVMe or OS cache.",
                         "Storage time includes safetensors mmap/page faults and CPU staging copies.",
-                        "The Python runtime is synchronous and does not overlap storage, H2D, or compute.",
+                        (
+                            "The Python runtime is synchronous and does not overlap storage, H2D, or compute."
+                            if args.pipeline == "sync"
+                            else "The bounded async path is designed to permit mmap/page-cache service and pinned H2D to progress alongside expert compute inside a routed layer; this run does not itself measure interval overlap or prove physical NVMe activity."
+                        ),
                         "One prompt and at most a few greedy tokens cannot establish production performance.",
                         "Prefill groups unique active experts per layer; its lookups are not a tokenwise trace replay.",
                         "No model.to/cuda/cpu, torch.compile, or graph capture is allowed after partial meta loading.",
@@ -1125,6 +1201,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "device": str(device),
                     "device_name": torch.cuda.get_device_name(),
                     "policy": args.policy,
+                    "pipeline": args.pipeline,
                     "capacity_scope": "independent per-layer partitions",
                     "hotset_json": args.hotset_json,
                     "hotset_sha256": hotset_digest,

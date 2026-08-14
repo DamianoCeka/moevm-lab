@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Added an opt-in bounded expert pipeline with one storage worker, pinned host
+  staging, a dedicated CUDA H2D stream and per-slot CUDA events. The existing
+  synchronous path remains the default.
+- Added `--pipeline async` to the paged OLMoE benchmark; async runs require at
+  least two staging slots so storage/page-cache service and H2D submission can
+  progress ahead of expert compute within a routed layer.
+- Added explicit pipeline draining and shutdown through `wait_idle()` and
+  idempotent `close()`.
+- Split logical cache misses from coalesced storage and transfer operations in
+  benchmark metrics, with fail-fast bounded-queue admission.
+- This MVP does not establish physical NVMe overlap or an end-to-end speedup:
+  safetensors remains mmap/page-cache backed, and comparative runtime evidence
+  is still required.
+
 ## 0.3.0 — 2026-08-14
 
 - Relicensed the current community source tree under Apache License 2.0, added
