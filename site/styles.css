@@ -69,6 +69,18 @@ button:focus-visible {
   transform: translateY(0);
 }
 
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 .section-shell,
 .site-header {
   width: min(100%, var(--max-width));
@@ -305,7 +317,19 @@ h3 {
   display: block;
   width: 4rem;
   height: 4rem;
+  object-fit: contain;
   opacity: 1;
+}
+
+.tier-icon-gpu {
+  width: 3rem;
+  height: 3rem;
+  margin-inline: 0.5rem;
+}
+
+.tier-icon-ram,
+.tier-icon-nvme {
+  filter: invert(82%);
 }
 
 .tier-name {
@@ -377,15 +401,15 @@ h3 {
 }
 
 .expert-path-source {
-  animation: expert-source-pulse 4.6s ease-in-out 0.2s 1 both;
+  animation: expert-source-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .expert-path-cache {
-  animation: expert-cache-pulse 4.6s ease-in-out 0.2s 1 both;
+  animation: expert-cache-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .expert-path-active {
-  animation: expert-active-pulse 4.6s ease-in-out 0.2s 1 both;
+  animation: expert-active-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .ellipsis {
@@ -422,43 +446,58 @@ h3 {
   position: absolute;
 }
 
-.route-target,
-.route-source {
+.route-target {
   width: 0;
   border-left: 3px solid currentColor;
 }
 
 .route-target {
-  top: 0;
-  left: 0;
-  height: 50%;
+  top: 0.58rem;
+  left: -1.5px;
+  height: calc(50% - 1.26rem);
 }
 
 .route-bridge {
-  top: 50%;
+  top: calc(50% - 0.68rem);
   right: 0;
-  left: 0;
-  height: 0;
-  border-top: 3px solid currentColor;
+  left: -1.5px;
+  height: 0.68rem;
+  border-bottom: 3px solid currentColor;
+  border-left: 3px solid currentColor;
+  border-bottom-left-radius: 0.68rem;
 }
 
 .route-source {
   top: 50%;
-  right: 0;
+  right: -1.5px;
+  width: 0.68rem;
   height: 50%;
+  border-top: 3px solid currentColor;
+  border-right: 3px solid currentColor;
+  border-top-right-radius: 0.68rem;
 }
 
-.route-promote .route-segment {
-  border-style: dashed;
+.route-promote .route-target {
+  border-left-style: dashed;
+}
+
+.route-promote .route-bridge {
+  border-bottom-style: dashed;
+  border-left-style: dashed;
+}
+
+.route-promote .route-source {
+  border-top-style: dashed;
+  border-right-style: dashed;
 }
 
 .route-arrow {
-  top: -0.2rem;
-  left: -0.68rem;
-  width: 1.35rem;
-  height: 1.35rem;
+  top: -0.3rem;
+  left: -0.7rem;
+  width: 1.4rem;
+  height: 1.4rem;
   background: currentColor;
-  mask: url("assets/icons/arrow-up.svg") center / contain no-repeat;
+  mask: url("assets/icons/caret-up-bold.svg") center / contain no-repeat;
 }
 
 .route-packet {
@@ -473,22 +512,29 @@ h3 {
   opacity: 0;
 }
 
-.route-promote .route-segment,
-.route-promote .route-arrow {
-  animation: upper-link-pulse 4.6s ease-in-out 0.2s 1 both;
+.route-promote .route-segment {
+  animation: upper-link-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .route-promote .route-packet {
-  animation: upper-packet 4.6s ease-in-out 0.2s 1 both;
+  animation: upper-packet 4.6s ease-in-out 0.2s infinite both;
 }
 
-.route-prefetch .route-segment,
-.route-prefetch .route-arrow {
-  animation: lower-link-pulse 4.6s ease-in-out 0.2s 1 both;
+.route-prefetch .route-segment {
+  animation: lower-link-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .route-prefetch .route-packet {
-  animation: lower-packet 4.6s ease-in-out 0.2s 1 both;
+  animation: lower-packet 4.6s ease-in-out 0.2s infinite both;
+}
+
+.motion-toggle:not(:checked) ~ .tier .expert-path-source,
+.motion-toggle:not(:checked) ~ .tier .expert-path-cache,
+.motion-toggle:not(:checked) ~ .tier .expert-path-active,
+.motion-toggle:not(:checked) ~ .route .route-segment,
+.motion-toggle:not(:checked) ~ .route .route-arrow,
+.motion-toggle:not(:checked) ~ .route .route-packet {
+  animation-play-state: paused;
 }
 
 .memory-legend {
@@ -506,6 +552,48 @@ h3 {
   align-items: center;
   gap: 0.65rem;
   white-space: nowrap;
+}
+
+.motion-control {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  margin-left: auto;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 680;
+  line-height: 1;
+  transition:
+    border-color var(--transition),
+    color var(--transition),
+    background var(--transition);
+}
+
+.motion-control:hover {
+  border-color: var(--cyan);
+  background: rgba(66, 217, 238, 0.07);
+  color: var(--text);
+}
+
+.motion-toggle:focus-visible ~ .memory-legend .motion-control {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.motion-control-play {
+  display: none;
+}
+
+.motion-toggle:not(:checked) ~ .memory-legend .motion-control-pause {
+  display: none;
+}
+
+.motion-toggle:not(:checked) ~ .memory-legend .motion-control-play {
+  display: inline;
 }
 
 .legend-line {
@@ -850,6 +938,18 @@ h3 {
   font-size: 0.78rem;
 }
 
+.asset-credit {
+  margin: 0.65rem 0 0;
+  color: var(--faint);
+  font-size: 0.75rem;
+}
+
+.asset-credit a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
 @keyframes reveal-bar {
   from {
     transform: scaleX(0);
@@ -1148,6 +1248,12 @@ h3 {
     height: 3rem;
   }
 
+  .tier-icon-gpu {
+    width: 2.5rem;
+    height: 2.5rem;
+    margin-inline: 0.25rem;
+  }
+
   .tier-name strong {
     font-size: 1.55rem;
   }
@@ -1168,9 +1274,11 @@ h3 {
   }
 
   .route-target {
-    top: 0;
-    left: 50%;
-    height: 100%;
+    top: 0.58rem;
+    left: calc(50% - 1.5px);
+    height: calc(100% - 0.58rem);
+    border-bottom: 0;
+    border-bottom-left-radius: 0;
   }
 
   .route-bridge,
@@ -1179,8 +1287,8 @@ h3 {
   }
 
   .route-arrow {
-    top: -0.1rem;
-    left: calc(50% - 0.68rem);
+    top: -0.3rem;
+    left: calc(50% - 0.7rem);
   }
 
   .route-prefetch .route-packet {
@@ -1344,6 +1452,10 @@ h3 {
   }
 
   .memory-system .route-packet {
+    display: none;
+  }
+
+  .memory-system .motion-control {
     display: none;
   }
 }
