@@ -52,6 +52,11 @@ class StaticSiteTests(unittest.TestCase):
             "robots.txt",
             "sitemap.xml",
             "vercel.json",
+            "assets/icons/gpu-card.svg",
+            "assets/icons/cpu.svg",
+            "assets/icons/nvme.svg",
+            "assets/icons/arrow-up.svg",
+            "assets/icons/LICENSE.phosphor-icons",
         ):
             self.assertTrue((SITE / name).is_file(), name)
 
@@ -138,10 +143,31 @@ class StaticSiteTests(unittest.TestCase):
             self.assertIn(keyframes, css)
         reduced_motion = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
         self.assertIn(".memory-system .expert-path-source", reduced_motion)
+        self.assertIn(".memory-system .route-packet", reduced_motion)
         self.assertIn("animation: none !important", reduced_motion)
         self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s 1 both"), 7)
         self.assertNotIn("will-change", css)
         self.assertNotIn("<script", self.html.casefold())
+
+    def test_memory_diagram_matches_hardware_reference_structure(self) -> None:
+        self.assertIn('class="memory-system"\n          role="img"', self.html)
+        for asset in (
+            "assets/icons/gpu-card.svg",
+            "assets/icons/cpu.svg",
+            "assets/icons/nvme.svg",
+        ):
+            self.assertEqual(1, self.html.count(f'src="{asset}"'))
+        self.assertEqual(2, self.html.count('class="route route-'))
+        self.assertEqual(2, self.html.count('class="route-packet"'))
+        self.assertEqual(3, self.html.count('class="legend-line '))
+        self.assertNotIn('class="transfer ', self.html)
+        for label in (
+            "Working set (active experts)",
+            "Cache of experts",
+            "Full expert library (cold)",
+            "Background maintenance",
+        ):
+            self.assertIn(label, self.html)
 
     def test_no_private_paths_or_contact_claims(self) -> None:
         self.assertNotRegex(

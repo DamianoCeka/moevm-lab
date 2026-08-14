@@ -79,71 +79,115 @@
           </p>
         </div>
 
-        <div class="memory-system" aria-label="Illustration of expert weights moving from NVMe through RAM into a small VRAM working set">
+        <figure
+          class="memory-system"
+          role="img"
+          aria-label="Animated illustration of expert E07 moving from the full NVMe library through the RAM cache into the active VRAM working set"
+        >
           <div class="tier tier-vram">
-            <div class="tier-heading">
-              <div>
+            <div class="tier-identity">
+              <img
+                class="tier-icon"
+                src="assets/icons/gpu-card.svg"
+                alt=""
+                width="64"
+                height="64"
+              />
+              <div class="tier-name">
                 <strong>VRAM</strong>
-                <span>Active working set</span>
+                <span>Fast · Small</span>
               </div>
-              <span class="tier-character">Fast · Small</span>
             </div>
-            <div class="expert-row" aria-hidden="true">
-              <span class="expert expert-active expert-path-active">E07</span>
-              <span class="expert">E01</span>
-              <span class="expert">E12</span>
-              <span class="ellipsis">•••</span>
-              <span class="expert expert-dashed">EN</span>
+            <div class="tier-content">
+              <span class="tier-content-label">Working set (active experts)</span>
+              <div class="expert-row" aria-hidden="true">
+                <span class="expert expert-active">E01</span>
+                <span class="expert expert-path-active">E07</span>
+                <span class="expert">E12</span>
+                <span class="ellipsis">•••</span>
+                <span class="expert expert-dashed">EN</span>
+              </div>
             </div>
           </div>
 
-          <div class="transfer transfer-up" aria-hidden="true">
-            <span></span>
-            <small>promote on demand</small>
+          <div class="route route-promote" aria-hidden="true">
+            <span class="route-segment route-target"></span>
+            <span class="route-segment route-bridge"></span>
+            <span class="route-segment route-source"></span>
+            <span class="route-arrow"></span>
+            <span class="route-packet"></span>
           </div>
 
           <div class="tier tier-ram">
-            <div class="tier-heading">
-              <div>
+            <div class="tier-identity">
+              <img
+                class="tier-icon"
+                src="assets/icons/cpu.svg"
+                alt=""
+                width="64"
+                height="64"
+              />
+              <div class="tier-name">
                 <strong>RAM</strong>
-                <span>Warm expert cache</span>
+                <span>Larger · Slower</span>
               </div>
-              <span class="tier-character">Larger · Slower</span>
             </div>
-            <div class="expert-row" aria-hidden="true">
-              <span class="expert">E02</span>
-              <span class="expert">E04</span>
-              <span class="expert expert-warm expert-path-cache">E07</span>
-              <span class="expert">E15</span>
-              <span class="expert">E23</span>
-              <span class="ellipsis">•••</span>
+            <div class="tier-content">
+              <span class="tier-content-label">Cache of experts</span>
+              <div class="expert-row" aria-hidden="true">
+                <span class="expert">E02</span>
+                <span class="expert">E04</span>
+                <span class="expert expert-warm expert-path-cache">E07</span>
+                <span class="expert expert-secondary">E15</span>
+                <span class="expert expert-secondary">E23</span>
+                <span class="ellipsis">•••</span>
+                <span class="expert expert-dashed">EN</span>
+              </div>
             </div>
           </div>
 
-          <div class="transfer transfer-down" aria-hidden="true">
-            <span></span>
-            <small>read · prefetch · evict</small>
+          <div class="route route-prefetch" aria-hidden="true">
+            <span class="route-segment route-target"></span>
+            <span class="route-segment route-bridge"></span>
+            <span class="route-segment route-source"></span>
+            <span class="route-arrow"></span>
+            <span class="route-packet"></span>
           </div>
 
           <div class="tier tier-nvme">
-            <div class="tier-heading">
-              <div>
+            <div class="tier-identity">
+              <img
+                class="tier-icon"
+                src="assets/icons/nvme.svg"
+                alt=""
+                width="64"
+                height="64"
+              />
+              <div class="tier-name">
                 <strong>NVMe</strong>
-                <span>Cold expert library</span>
+                <span>Largest · Slowest</span>
               </div>
-              <span class="tier-character">Largest · Slowest</span>
             </div>
-            <div class="expert-row" aria-hidden="true">
-              <span class="expert">E00</span>
-              <span class="expert">E01</span>
-              <span class="expert expert-warm expert-path-source">E07</span>
-              <span class="ellipsis">•••</span>
-              <span class="expert">E02</span>
-              <span class="ellipsis">•••</span>
-              <span class="expert">EN</span>
+            <div class="tier-content">
+              <span class="tier-content-label">Full expert library (cold)</span>
+              <div class="expert-row" aria-hidden="true">
+                <span class="expert">E00</span>
+                <span class="expert">E01</span>
+                <span class="expert expert-secondary">E02</span>
+                <span class="ellipsis">•••</span>
+                <span class="expert expert-warm expert-path-source">E07</span>
+                <span class="ellipsis">•••</span>
+                <span class="expert expert-dashed">EN</span>
+              </div>
             </div>
           </div>
-        </div>
+
+          <figcaption class="memory-legend" aria-hidden="true">
+            <span><i class="legend-line legend-promote"></i>Promote (on demand)</span>
+            <span><i class="legend-line legend-prefetch"></i>Prefetch / Evict</span>
+            <span><i class="legend-line legend-background"></i>Background maintenance</span>
+          </figcaption>
+        </figure>
       </section>
 
       <section class="evidence section-shell" id="evidence" aria-labelledby="evidence-title">
