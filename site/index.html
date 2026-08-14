@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="MoEVM Lab researches expert-aware memory virtualization for sparse Mixture-of-Experts inference across VRAM, RAM, and NVMe."
+    />
+    <meta name="theme-color" content="#071016" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="MoEVM Lab" />
+    <meta
+      property="og:description"
+      content="Expert-aware memory virtualization research for sparse MoE inference."
+    />
+    <meta property="og:url" content="https://www.moevmlab.com/" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="canonical" href="https://www.moevmlab.com/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>MoEVM Lab — Expert-aware memory virtualization</title>
+  </head>
+  <body id="page-top">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="#page-top" aria-label="MoEVM Lab home">MoEVM Lab</a>
+      <nav aria-label="Primary navigation">
+        <a href="#evidence">Evidence</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#demo">Demo</a>
+        <a href="#pilot">Pilot</a>
+        <a
+          class="nav-github"
+          href="https://github.com/DamianoCeka/moevm-lab"
+          rel="noopener noreferrer"
+          >GitHub <span aria-hidden="true">↗</span></a
+        >
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero section-shell" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title">
+            Expert-aware memory virtualization for sparse MoE inference.
+          </h1>
+          <p class="hero-lede">
+            MoEVM Lab investigates whether VRAM can act as a small, predictive
+            working set while colder expert weights live in RAM and NVMe.
+          </p>
+          <p class="hero-support">
+            A reproducible simulator, real OLMoE routing capture, measured
+            workstation calibration, and a bounded paged-runtime prototype.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a
+              class="button button-primary"
+              href="https://github.com/DamianoCeka/moevm-lab#one-command-olmoe-demo-on-windows"
+              rel="noopener noreferrer"
+              >Run the demo <span aria-hidden="true">→</span></a
+            >
+            <a
+              class="button button-secondary"
+              href="https://github.com/DamianoCeka/moevm-lab"
+              rel="noopener noreferrer"
+              >View on GitHub <span aria-hidden="true">↗</span></a
+            >
+          </div>
+          <p class="status-line">
+            <span>Pre-alpha research</span>
+            <span>Apache-2.0</span>
+            <span>No model weights included</span>
+          </p>
+          <p class="boundary-note">
+            Not a Kimi K3 runtime. No production-serving or universal speedup
+            claim.
+          </p>
+        </div>
+
+        <div class="memory-system" aria-label="Illustration of expert weights moving from NVMe through RAM into a small VRAM working set">
+          <div class="tier tier-vram">
+            <div class="tier-heading">
+              <div>
+                <strong>VRAM</strong>
+                <span>Active working set</span>
+              </div>
+              <span class="tier-character">Fast · Small</span>
+            </div>
+            <div class="expert-row" aria-hidden="true">
+              <span class="expert expert-active">E01</span>
+              <span class="expert">E07</span>
+              <span class="expert">E12</span>
+              <span class="ellipsis">•••</span>
+              <span class="expert expert-dashed">EN</span>
+            </div>
+          </div>
+
+          <div class="transfer transfer-up" aria-hidden="true">
+            <span></span>
+            <small>promote on demand</small>
+          </div>
+
+          <div class="tier tier-ram">
+            <div class="tier-heading">
+              <div>
+                <strong>RAM</strong>
+                <span>Warm expert cache</span>
+              </div>
+              <span class="tier-character">Larger · Slower</span>
+            </div>
+            <div class="expert-row" aria-hidden="true">
+              <span class="expert">E02</span>
+              <span class="expert">E04</span>
+              <span class="expert expert-warm">E07</span>
+              <span class="expert">E15</span>
+              <span class="expert">E23</span>
+              <span class="ellipsis">•••</span>
+            </div>
+          </div>
+
+          <div class="transfer transfer-down" aria-hidden="true">
+            <span></span>
+            <small>read · prefetch · evict</small>
+          </div>
+
+          <div class="tier tier-nvme">
+            <div class="tier-heading">
+              <div>
+                <strong>NVMe</strong>
+                <span>Cold expert library</span>
+              </div>
+              <span class="tier-character">Largest · Slowest</span>
+            </div>
+            <div class="expert-row" aria-hidden="true">
+              <span class="expert">E00</span>
+              <span class="expert">E01</span>
+              <span class="expert">E02</span>
+              <span class="ellipsis">•••</span>
+              <span class="expert expert-warm">E07</span>
+              <span class="ellipsis">•••</span>
+              <span class="expert">EN</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="evidence section-shell" id="evidence" aria-labelledby="evidence-title">
+        <div class="section-heading">
+          <p class="section-label">Evidence</p>
+          <h2 id="evidence-title">
+            Measured on one RTX 3080 Ti.<br />Reported with limits.
+          </h2>
+          <p>
+            A controlled OLMoE study compared MoEVM with one specific
+            Transformers/Accelerate CPU-offload baseline.
+          </p>
+        </div>
+
+        <dl class="evidence-rail">
+          <div>
+            <dt>Empty expert cache</dt>
+            <dd>1.338×</dd>
+          </div>
+          <div>
+            <dt>Immediate retained repeat</dt>
+            <dd>1.900×</dd>
+          </div>
+          <div>
+            <dt>Lower peak allocated VRAM</dt>
+            <dd>21.33%</dd>
+          </div>
+        </dl>
+
+        <p class="study-scope">
+          5 prompts <span>·</span> 16 teacher-forced tokens each
+          <span>·</span> seed 17 <span>·</span> no concurrency
+        </p>
+
+        <figure class="wall-time-chart">
+          <figcaption>Aggregate wall time <span>lower is better</span></figcaption>
+          <div class="bar-row">
+            <span class="bar-label">CPU offload</span>
+            <div class="bar-track"><span class="bar bar-baseline"></span></div>
+            <strong>49.665 s</strong>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">MoEVM empty</span>
+            <div class="bar-track"><span class="bar bar-empty"></span></div>
+            <strong>37.114 s</strong>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">MoEVM retained</span>
+            <div class="bar-track"><span class="bar bar-retained"></span></div>
+            <strong>26.140 s</strong>
+          </div>
+        </figure>
+
+        <div class="evidence-boundary">
+          <p>
+            <strong>Evidence boundary.</strong> This is not a general serving
+            claim. The baseline was not a tuned server, the OS file cache was
+            not flushed, and logical traffic is not physical NVMe telemetry.
+          </p>
+          <a
+            class="text-link"
+            href="https://github.com/DamianoCeka/moevm-lab/tree/main/benchmarks/reference/paged-runtime-olmoe-p310-multiworkload"
+            rel="noopener noreferrer"
+            >Read the full evidence <span aria-hidden="true">→</span></a
+          >
+        </div>
+      </section>
+
+      <section class="workflow section-shell" id="how-it-works" aria-labelledby="workflow-title">
+        <div class="section-heading">
+          <p class="section-label">How it works</p>
+          <h2 id="workflow-title">From routing trace to a hardware decision.</h2>
+        </div>
+
+        <ol class="workflow-rail">
+          <li>
+            <span class="workflow-index">1</span>
+            <h3>Capture routing</h3>
+            <p>Pin the checkpoint and record real expert selections.</p>
+          </li>
+          <li>
+            <span class="workflow-index">2</span>
+            <h3>Calibrate hardware</h3>
+            <p>Measure storage and RAM-to-VRAM transfers.</p>
+          </li>
+          <li>
+            <span class="workflow-index">3</span>
+            <h3>Replay policies</h3>
+            <p>Compare caching, placement, and prefetch under the same workload.</p>
+          </li>
+          <li>
+            <span class="workflow-index">4</span>
+            <h3>Validate a prototype</h3>
+            <p>Run bounded expert paging and preserve the evidence boundary.</p>
+          </li>
+        </ol>
+
+        <p class="workflow-note">
+          The real prototype exercises a bounded OLMoE paging path. It is a
+          research instrument, not a production serving stack.
+        </p>
+      </section>
+
+      <section class="demo section-shell" id="demo" aria-labelledby="demo-title">
+        <div class="demo-copy">
+          <p class="section-label">One command</p>
+          <h2 id="demo-title">Try the bounded OLMoE demo.</h2>
+          <p>
+            The launcher checks compatible hardware, prepares an isolated
+            environment when needed, verifies the pinned public checkpoint, and
+            reports timing, memory, and logical storage traffic.
+          </p>
+          <p class="requirements">
+            Windows · Python 3.12 · NVIDIA BF16 GPU · CUDA 13-compatible
+            driver · 8 GiB VRAM total / 4 GiB free (6 GiB recommended) · 16
+            GiB RAM / 8 GiB available · up to 35 GiB disk
+          </p>
+        </div>
+        <div class="demo-command">
+          <code>.\demo.cmd</code>
+          <a
+            class="button button-secondary"
+            href="https://github.com/DamianoCeka/moevm-lab/blob/main/docs/ONE_COMMAND_DEMO.md"
+            rel="noopener noreferrer"
+            >Open demo guide <span aria-hidden="true">→</span></a
+          >
+          <small>
+            One prompt and up to two generated tokens: an interactive hardware
+            demonstration, not publishable benchmark evidence.
+          </small>
+        </div>
+      </section>
+
+      <section class="pilot section-shell" id="pilot" aria-labelledby="pilot-title">
+        <div>
+          <p class="section-label">Design-partner pilot</p>
+          <h2 id="pilot-title">Need a model and hardware fit answer?</h2>
+          <p>
+            A fixed-scope audit can cover one checkpoint, one hardware profile,
+            one workload family, and one existing baseline. The result may be
+            positive, negative, or conditional—and ends with reproducible
+            evidence plus a go/no-go or next-step recommendation.
+          </p>
+          <p class="pilot-boundary">
+            Paid work covers scoped engineering and measurement, not a hidden
+            edition of the Apache-2.0 project. No speedup, arbitrary checkpoint
+            compatibility, or production SLA is guaranteed.
+          </p>
+        </div>
+        <div class="pilot-action">
+          <a
+            class="button button-primary"
+            href="https://github.com/DamianoCeka/moevm-lab/issues/new?template=commercial_inquiry.yml"
+            rel="noopener noreferrer"
+            >Start a public inquiry <span aria-hidden="true">↗</span></a
+          >
+          <p>
+            <strong>GitHub issues are public.</strong> Do not include private
+            weights, credentials, customer data, or confidential prompts.
+          </p>
+          <a
+            class="text-link"
+            href="https://github.com/DamianoCeka/moevm-lab/blob/main/COMMERCIAL_SUPPORT.md"
+            rel="noopener noreferrer"
+            >Review scope and introductory ranges <span aria-hidden="true">→</span></a
+          >
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer section-shell">
+      <div class="footer-row">
+        <a class="brand" href="#page-top">MoEVM Lab</a>
+        <nav aria-label="Footer navigation">
+          <a href="https://github.com/DamianoCeka/moevm-lab" rel="noopener noreferrer">GitHub</a>
+          <a href="https://github.com/DamianoCeka/moevm-lab#documentation" rel="noopener noreferrer">Documentation</a>
+          <a href="https://github.com/DamianoCeka/moevm-lab/blob/main/LICENSE" rel="noopener noreferrer">Apache-2.0</a>
+          <a href="https://github.com/DamianoCeka/moevm-lab/blob/main/PRIVACY.md" rel="noopener noreferrer">Privacy</a>
+          <a href="https://github.com/DamianoCeka/moevm-lab/blob/main/SECURITY.md" rel="noopener noreferrer">Security</a>
+          <a href="https://github.com/DamianoCeka/moevm-lab/blob/main/docs/README.it.md" rel="noopener noreferrer">Italiano</a>
+        </nav>
+      </div>
+      <p class="legal-copy">
+        MoEVM Lab is an independent research project by Damiano Ceka. It is not
+        affiliated with, endorsed by, or sponsored by Moonshot AI/Kimi, vLLM,
+        Allen Institute for AI, NVIDIA, AMD, Microsoft, or any referenced third
+        party. No model weights are included.
+      </p>
+    </footer>
+  </body>
+</html>

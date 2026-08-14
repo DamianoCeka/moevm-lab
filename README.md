@@ -2,6 +2,8 @@
 
 **Expert-aware memory virtualization research for sparse Mixture-of-Experts inference.**
 
+Website: [moevmlab.com](https://www.moevmlab.com/) · Source: [GitHub](https://github.com/DamianoCeka/moevm-lab)
+
 MoEVM Lab investigates whether a large sparse MoE can use VRAM as a small, predictive working set while colder expert weights live in RAM and NVMe storage.
 
 > **Current status: v0.3.0.** The lab now
