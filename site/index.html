@@ -81,14 +81,24 @@
 
         <figure
           class="memory-system"
-          role="img"
-          aria-label="Animated illustration of expert E07 moving from the full NVMe library through the RAM cache into the active VRAM working set"
+          aria-labelledby="memory-diagram-title"
         >
+          <figcaption id="memory-diagram-title" class="visually-hidden">
+            Animated illustration of expert E07 moving from the full NVMe
+            library through the RAM cache into the active VRAM working set.
+          </figcaption>
+          <input
+            class="motion-toggle visually-hidden"
+            id="memory-motion-toggle"
+            type="checkbox"
+            aria-label="Animate the expert memory transfer"
+            checked
+          />
           <div class="tier tier-vram">
             <div class="tier-identity">
               <img
-                class="tier-icon"
-                src="assets/icons/gpu-card.svg"
+                class="tier-icon tier-icon-gpu"
+                src="assets/icons/gpu-device.png"
                 alt=""
                 width="64"
                 height="64"
@@ -121,8 +131,8 @@
           <div class="tier tier-ram">
             <div class="tier-identity">
               <img
-                class="tier-icon"
-                src="assets/icons/cpu.svg"
+                class="tier-icon tier-icon-ram"
+                src="assets/icons/ram-device.png"
                 alt=""
                 width="64"
                 height="64"
@@ -157,8 +167,8 @@
           <div class="tier tier-nvme">
             <div class="tier-identity">
               <img
-                class="tier-icon"
-                src="assets/icons/nvme.svg"
+                class="tier-icon tier-icon-nvme"
+                src="assets/icons/nvme-device.png"
                 alt=""
                 width="64"
                 height="64"
@@ -182,11 +192,15 @@
             </div>
           </div>
 
-          <figcaption class="memory-legend" aria-hidden="true">
+          <div class="memory-legend" aria-label="Transfer legend">
             <span><i class="legend-line legend-promote"></i>Promote (on demand)</span>
             <span><i class="legend-line legend-prefetch"></i>Prefetch / Evict</span>
             <span><i class="legend-line legend-background"></i>Background maintenance</span>
-          </figcaption>
+            <label class="motion-control" for="memory-motion-toggle" aria-hidden="true">
+              <span class="motion-control-pause">Pause motion</span>
+              <span class="motion-control-play">Play motion</span>
+            </label>
+          </div>
         </figure>
       </section>
 
@@ -375,6 +389,11 @@
         affiliated with, endorsed by, or sponsored by Moonshot AI/Kimi, vLLM,
         Allen Institute for AI, NVIDIA, AMD, Microsoft, or any referenced third
         party. No model weights are included.
+      </p>
+      <p class="asset-credit">
+        GPU and RAM icons by
+        <a href="https://icons8.com/" rel="noopener noreferrer">Icons8</a>.
+        NVMe artwork supplied by the project owner.
       </p>
     </footer>
   </body>

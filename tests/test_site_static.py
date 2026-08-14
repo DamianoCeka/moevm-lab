@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unittest
@@ -52,13 +53,24 @@ class StaticSiteTests(unittest.TestCase):
             "robots.txt",
             "sitemap.xml",
             "vercel.json",
-            "assets/icons/gpu-card.svg",
-            "assets/icons/cpu.svg",
-            "assets/icons/nvme.svg",
-            "assets/icons/arrow-up.svg",
+            "assets/icons/gpu-device.png",
+            "assets/icons/ram-device.png",
+            "assets/icons/nvme-device.png",
+            "assets/icons/caret-up-bold.svg",
             "assets/icons/LICENSE.phosphor-icons",
+            "assets/icons/ASSET_PROVENANCE.md",
         ):
             self.assertTrue((SITE / name).is_file(), name)
+
+    def test_user_supplied_hardware_assets_are_exact(self) -> None:
+        expected = {
+            "gpu-device.png": "4de39640c607f6608676567f6c697108ccc3568019a5c10db4e2e419b108d71f",
+            "ram-device.png": "d94f9de2405d05146715470d1658bf703f522ffa7c5fad82baf6b65f4e0ab8b6",
+            "nvme-device.png": "369828eb666f61b2497494815429206b00e750dfb907ea285f1f5f353ecc434b",
+        }
+        for name, expected_sha256 in expected.items():
+            payload = (SITE / "assets" / "icons" / name).read_bytes()
+            self.assertEqual(expected_sha256, hashlib.sha256(payload).hexdigest())
 
     def test_internal_anchors_resolve(self) -> None:
         anchors = [href[1:] for href in self.parser.hrefs if href.startswith("#")]
@@ -145,16 +157,26 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn(".memory-system .expert-path-source", reduced_motion)
         self.assertIn(".memory-system .route-packet", reduced_motion)
         self.assertIn("animation: none !important", reduced_motion)
-        self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s 1 both"), 7)
+        self.assertIn(".memory-system .motion-control", reduced_motion)
+        self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s infinite both"), 7)
+        self.assertIn("animation-play-state: paused", css)
+        self.assertIn('id="memory-motion-toggle"', self.html)
+        self.assertIn('for="memory-motion-toggle"', self.html)
+        self.assertIn("Pause motion", self.html)
+        self.assertIn("Play motion", self.html)
         self.assertNotIn("will-change", css)
         self.assertNotIn("<script", self.html.casefold())
 
     def test_memory_diagram_matches_hardware_reference_structure(self) -> None:
-        self.assertIn('class="memory-system"\n          role="img"', self.html)
+        self.assertIn(
+            'class="memory-system"\n          aria-labelledby="memory-diagram-title"',
+            self.html,
+        )
+        self.assertIn('id="memory-diagram-title"', self.html)
         for asset in (
-            "assets/icons/gpu-card.svg",
-            "assets/icons/cpu.svg",
-            "assets/icons/nvme.svg",
+            "assets/icons/gpu-device.png",
+            "assets/icons/ram-device.png",
+            "assets/icons/nvme-device.png",
         ):
             self.assertEqual(1, self.html.count(f'src="{asset}"'))
         self.assertEqual(2, self.html.count('class="route route-'))
