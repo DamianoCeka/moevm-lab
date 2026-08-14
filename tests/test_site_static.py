@@ -56,7 +56,7 @@ class StaticSiteTests(unittest.TestCase):
             "assets/icons/gpu-device.png",
             "assets/icons/ram-device.png",
             "assets/icons/nvme-device.png",
-            "assets/icons/caret-up-bold.svg",
+            "assets/icons/arrow-up-bold.svg",
             "assets/icons/LICENSE.phosphor-icons",
             "assets/icons/ASSET_PROVENANCE.md",
         ):
@@ -168,6 +168,7 @@ class StaticSiteTests(unittest.TestCase):
         self.assertNotIn("<script", self.html.casefold())
 
     def test_memory_diagram_matches_hardware_reference_structure(self) -> None:
+        css = (SITE / "styles.css").read_text(encoding="utf-8")
         self.assertIn(
             'class="memory-system"\n          aria-labelledby="memory-diagram-title"',
             self.html,
@@ -183,6 +184,20 @@ class StaticSiteTests(unittest.TestCase):
         self.assertEqual(2, self.html.count('class="route-packet"'))
         self.assertEqual(3, self.html.count('class="legend-line '))
         self.assertNotIn('class="transfer ', self.html)
+        self.assertIn('mask: url("assets/icons/arrow-up-bold.svg")', css)
+        self.assertRegex(
+            css,
+            r"\.route-promote\s*\{[^}]*left:\s*41\.44%;[^}]*width:\s*18\.34%;",
+        )
+        self.assertRegex(
+            css,
+            r"\.route-prefetch\s*\{[^}]*left:\s*59\.78%;[^}]*width:\s*15\.97%;",
+        )
+        self.assertRegex(css, r"\.route-bridge\s*\{[^}]*right:\s*0\.68rem;")
+        self.assertIn(
+            'class="expert expert-active expert-path-active">E01</span>', self.html
+        )
+        self.assertNotIn('class="expert expert-path-active">E07</span>', self.html)
         for label in (
             "Working set (active experts)",
             "Cache of experts",

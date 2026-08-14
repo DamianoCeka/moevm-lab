@@ -427,16 +427,16 @@ h3 {
 
 .route-promote {
   top: 8.6rem;
-  left: 42%;
-  width: 19%;
-  height: 9.15rem;
+  left: 41.44%;
+  width: 18.34%;
+  height: 9.86rem;
 }
 
 .route-prefetch {
   top: 22rem;
-  left: 60.5%;
-  width: 12.3%;
-  height: 9.2rem;
+  left: 59.78%;
+  width: 15.97%;
+  height: 10.07rem;
   color: var(--coral);
 }
 
@@ -459,7 +459,7 @@ h3 {
 
 .route-bridge {
   top: calc(50% - 0.68rem);
-  right: 0;
+  right: 0.68rem;
   left: -1.5px;
   height: 0.68rem;
   border-bottom: 3px solid currentColor;
@@ -492,12 +492,12 @@ h3 {
 }
 
 .route-arrow {
-  top: -0.3rem;
-  left: -0.7rem;
-  width: 1.4rem;
-  height: 1.4rem;
+  top: -0.38rem;
+  left: -0.75rem;
+  width: 1.5rem;
+  height: 1.5rem;
   background: currentColor;
-  mask: url("assets/icons/caret-up-bold.svg") center / contain no-repeat;
+  mask: url("assets/icons/arrow-up-bold.svg") center / contain no-repeat;
 }
 
 .route-packet {
@@ -1094,9 +1094,9 @@ h3 {
   62%,
   91%,
   100% {
-    border-color: var(--line-strong);
-    background: transparent;
-    color: var(--muted);
+    border-color: var(--cyan);
+    background: var(--cyan);
+    color: var(--bg-deep);
     filter: none;
     transform: scale(1);
   }
@@ -1287,8 +1287,8 @@ h3 {
   }
 
   .route-arrow {
-    top: -0.3rem;
-    left: calc(50% - 0.7rem);
+    top: -0.38rem;
+    left: calc(50% - 0.75rem);
   }
 
   .route-prefetch .route-packet {
