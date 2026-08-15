@@ -1748,7 +1748,10 @@ class ExpertSlotCache:
                     self._slot_quarantined[slot] = True
                 else:
                     self._slot_quarantined[slot] = False
-                    self._slot_last_use_event[slot] = None
+                    # A lease can record its compute-stream tail before a
+                    # later poll reports this H2D as failed.  Keep that event
+                    # even though the logical mapping is gone: a subsequent
+                    # transfer must still wait before overwriting the buffer.
             if self._pending_by_key.get(ticket.key) is ticket:
                 del self._pending_by_key[ticket.key]
             if ticket.stage_index is not None:

@@ -1828,6 +1828,9 @@ class PagedRuntimeTests(unittest.TestCase):
                 torch.empty((1024, 1024), device="cuda").fill_(1)
         slot = ticket.destination_slot
         self.assertIsNotNone(slot)
+        lease.release_after(stream)
+        tail_event = cache._slot_last_use_event[slot]
+        self.assertIsNotNone(tail_event)
 
         original_set_device = torch.cuda.set_device
 
@@ -1840,11 +1843,10 @@ class PagedRuntimeTests(unittest.TestCase):
         finally:
             torch.cuda.set_device = original_set_device
 
-        lease.release_after(stream)
-        tail_event = cache._slot_last_use_event[slot]
-        self.assertIsNotNone(tail_event)
         with cache._condition:
+            self.assertEqual(ticket.state, "failed")
             self.assertFalse(cache._slot_quarantined[slot])
+            self.assertIs(cache._slot_last_use_event[slot], tail_event)
             cache._pipeline_error = None
             cache._unobserved_errors.clear()
 
