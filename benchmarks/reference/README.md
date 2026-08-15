@@ -20,6 +20,10 @@ runtime smoke are kept distinct; none is a production serving claim.
   deliberately narrow two-token evidence boundary.
 - `paged-runtime-olmoe-p310-multiworkload/`: five-workload, 16-token
   teacher-forced comparison against the pinned Accelerate CPU-offload path.
+- `paged-runtime-olmoe-runpod-rtx6000ada-study/`: 36 paired sync/async cases on
+  one RTX 6000 Ada, including workload, token-length and cache-capacity
+  sensitivity. The mixed result documents both gains and retained-cache
+  regressions.
 
 Regenerate with:
 

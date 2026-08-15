@@ -48,15 +48,20 @@ been shown to track end-to-end measurements within a documented error band.
 - [x] exact tiny-model logits/generation tests and a full-model greedy-token
   parity gate;
 - [x] first controlled full-model tokens/s and VRAM smoke measurement;
+- [x] 36-pair RTX 6000 Ada sync/async sensitivity study across workloads,
+  continuation lengths and GPU-cache capacities;
+- [ ] adaptive sync/async selection based on cache state and measured stall
+  pressure;
 
 The first LRU32 OLMoE smoke reduces observed peak allocated VRAM by 21.34% and
 the retained-cache pass is faster than the matching CPU-offload capture, while
-the empty-cache pass is slower. The async work is an opt-in, one-worker MVP over
+the empty-cache pass is slower. The 36-pair RTX 6000 Ada follow-up finds a
+positive five-workload core result but also retained-cache regressions at longer
+continuations. The async work remains an opt-in, one-worker MVP over
 mmap/page-cache-backed storage; it is not proof of direct physical NVMe overlap.
-**Exit criterion still open:** one prompt, two generated tokens, uncontrolled
-OS-cache state and only one accepted three-pair sync-versus-async smoke are
-insufficient to establish a repeatable improvement across workloads and
-sequence lengths.
+**Exit criterion still open:** adaptive scheduling, longer free-running
+generation, concurrency and common CUDA-timeline evidence are required before
+a general performance claim.
 
 ## M4 — Storage-aware expert runtime
 

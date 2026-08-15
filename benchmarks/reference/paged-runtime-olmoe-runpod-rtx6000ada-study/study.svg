@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="1510" viewBox="0 0 1320 1510" role="img" aria-labelledby="chart-title chart-desc">
+<title id="chart-title">RTX 6000 Ada synchronous versus asynchronous paged-runtime study</title>
+<desc id="chart-desc">Median paired sync over async wall-time ratios with min-to-max intervals across three repetitions. Values above one favor async. Empty-cache results are usually positive, while retained-cache and long-token results include regressions.</desc>
+<style>
+text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#E8EEF4}
+.bg{fill:#07131A}.panel{fill:#0B1B24;stroke:#294654;stroke-width:1.5}
+.title{font-size:32px;font-weight:700}.lede{font-size:17px;fill:#AAB8C2}
+.section-title{font-size:21px;font-weight:700}.subtitle{font-size:14px;fill:#93A5B1}
+.row-label{font-size:13px;fill:#D6E0E7}.tick{font-size:12px;fill:#8295A2}
+.hint{font-size:12px;fill:#AAB8C2}.value{font-size:12px;font-weight:700}
+.grid{stroke:#203945;stroke-width:1}.baseline{stroke:#D6E0E7;stroke-width:1.5;stroke-dasharray:5 5}
+.interval{stroke-width:4;stroke-linecap:round}.cap{stroke-width:2}
+.cold{stroke:#45D4E8}.interval.cold{stroke:#45D4E8}.point.cold{fill:#45D4E8;stroke:#0B1B24;stroke-width:2}
+.retained{stroke:#FF8A65}.interval.retained{stroke:#FF8A65}.point.retained{fill:#0B1B24;stroke:#FF8A65;stroke-width:2}
+.legend{font-size:13px;fill:#C9D5DC}.note{font-size:13px;fill:#94A8B4}
+</style>
+<rect width="1320" height="1510" class="bg"/>
+<text x="45.0" y="55.0" class="title" text-anchor="start">Paged OLMoE runtime on RTX 6000 Ada</text>
+<text x="45.0" y="86.0" class="lede" text-anchor="start">Three paired repetitions per case · sync/async wall time · focused ratio scale 0.70–1.70×</text>
+<circle cx="51" cy="119" r="7" class="point cold"/>
+<text x="68.0" y="124.0" class="legend" text-anchor="start">Empty dynamic expert cache</text>
+<path d="M 286 111 L 294 119 L 286 127 L 278 119 Z" class="point retained"/>
+<text x="306.0" y="124.0" class="legend" text-anchor="start">Immediate retained-cache repeat</text>
+<rect x="45" y="150.0" width="1230" height="454.0" class="panel"/>
+<text x="75.0" y="188.0" class="section-title" text-anchor="start">Five-workload core comparison</text>
+<text x="75.0" y="216.0" class="subtitle" text-anchor="start">16 teacher-forced tokens · LRU32 per layer · interval is min–max across R1–R3</text>
+<line x1="394.3" y1="232.0" x2="394.3" y2="574.0" class="grid"/>
+<text x="394.3" y="220.0" class="tick" text-anchor="middle">0.75×</text>
+<line x1="615.5" y1="232.0" x2="615.5" y2="574.0" class="baseline"/>
+<text x="615.5" y="220.0" class="tick" text-anchor="middle">1.00×</text>
+<line x1="836.8" y1="232.0" x2="836.8" y2="574.0" class="grid"/>
+<text x="836.8" y="220.0" class="tick" text-anchor="middle">1.25×</text>
+<line x1="1058.0" y1="232.0" x2="1058.0" y2="574.0" class="grid"/>
+<text x="1058.0" y="220.0" class="tick" text-anchor="middle">1.50×</text>
+<line x1="1235.0" y1="232.0" x2="1235.0" y2="574.0" class="grid"/>
+<text x="1235.0" y="220.0" class="tick" text-anchor="middle">1.70×</text>
+<text x="1235.0" y="192.0" class="hint" text-anchor="end">&gt; 1× = async faster</text>
+<text x="75.0" y="247.0" class="row-label" text-anchor="start">domain_switch · empty</text>
+<line x1="657.5" y1="242.0" x2="940.1" y2="242.0" class="interval cold"/>
+<line x1="657.5" y1="237.0" x2="657.5" y2="247.0" class="cap cold"/>
+<line x1="940.1" y1="237.0" x2="940.1" y2="247.0" class="cap cold"/>
+<circle cx="775.3" cy="242.0" r="7" class="point cold"/>
+<text x="952.1" y="247.0" class="value" text-anchor="start">1.181×</text>
+<text x="75.0" y="281.0" class="row-label" text-anchor="start">domain_switch · retained</text>
+<line x1="567.7" y1="276.0" x2="762.9" y2="276.0" class="interval retained"/>
+<line x1="567.7" y1="271.0" x2="567.7" y2="281.0" class="cap retained"/>
+<line x1="762.9" y1="271.0" x2="762.9" y2="281.0" class="cap retained"/>
+<path d="M 572.7 268.0 L 580.7 276.0 L 572.7 284.0 L 564.7 276.0 Z" class="point retained"/>
+<text x="774.9" y="281.0" class="value" text-anchor="start">0.952×</text>
+<text x="75.0" y="315.0" class="row-label" text-anchor="start">math_reasoning · empty</text>
+<line x1="680.8" y1="310.0" x2="1172.2" y2="310.0" class="interval cold"/>
+<line x1="680.8" y1="305.0" x2="680.8" y2="315.0" class="cap cold"/>
+<line x1="1172.2" y1="305.0" x2="1172.2" y2="315.0" class="cap cold"/>
+<circle cx="1129.6" cy="310.0" r="7" class="point cold"/>
+<text x="1184.2" y="315.0" class="value" text-anchor="start">1.581×</text>
+<text x="75.0" y="349.0" class="row-label" text-anchor="start">math_reasoning · retained</text>
+<line x1="594.7" y1="344.0" x2="1006.3" y2="344.0" class="interval retained"/>
+<line x1="594.7" y1="339.0" x2="594.7" y2="349.0" class="cap retained"/>
+<line x1="1006.3" y1="339.0" x2="1006.3" y2="349.0" class="cap retained"/>
+<path d="M 726.9 336.0 L 734.9 344.0 L 726.9 352.0 L 718.9 344.0 Z" class="point retained"/>
+<text x="1018.3" y="349.0" class="value" text-anchor="start">1.126×</text>
+<text x="75.0" y="383.0" class="row-label" text-anchor="start">python_code · empty</text>
+<line x1="695.5" y1="378.0" x2="856.0" y2="378.0" class="interval cold"/>
+<line x1="695.5" y1="373.0" x2="695.5" y2="383.0" class="cap cold"/>
+<line x1="856.0" y1="373.0" x2="856.0" y2="383.0" class="cap cold"/>
+<circle cx="722.5" cy="378.0" r="7" class="point cold"/>
+<text x="868.0" y="383.0" class="value" text-anchor="start">1.121×</text>
+<text x="75.0" y="417.0" class="row-label" text-anchor="start">python_code · retained</text>
+<line x1="505.5" y1="412.0" x2="717.1" y2="412.0" class="interval retained"/>
+<line x1="505.5" y1="407.0" x2="505.5" y2="417.0" class="cap retained"/>
+<line x1="717.1" y1="407.0" x2="717.1" y2="417.0" class="cap retained"/>
+<path d="M 513.7 404.0 L 521.7 412.0 L 513.7 420.0 L 505.7 412.0 Z" class="point retained"/>
+<text x="729.1" y="417.0" class="value" text-anchor="start">0.885×</text>
+<text x="75.0" y="451.0" class="row-label" text-anchor="start">systems_en · empty</text>
+<line x1="618.3" y1="446.0" x2="777.2" y2="446.0" class="interval cold"/>
+<line x1="618.3" y1="441.0" x2="618.3" y2="451.0" class="cap cold"/>
+<line x1="777.2" y1="441.0" x2="777.2" y2="451.0" class="cap cold"/>
+<circle cx="745.1" cy="446.0" r="7" class="point cold"/>
+<text x="789.2" y="451.0" class="value" text-anchor="start">1.146×</text>
+<text x="75.0" y="485.0" class="row-label" text-anchor="start">systems_en · retained</text>
+<line x1="503.2" y1="480.0" x2="928.3" y2="480.0" class="interval retained"/>
+<line x1="503.2" y1="475.0" x2="503.2" y2="485.0" class="cap retained"/>
+<line x1="928.3" y1="475.0" x2="928.3" y2="485.0" class="cap retained"/>
+<path d="M 637.0 472.0 L 645.0 480.0 L 637.0 488.0 L 629.0 480.0 Z" class="point retained"/>
+<text x="940.3" y="485.0" class="value" text-anchor="start">1.024×</text>
+<text x="75.0" y="519.0" class="row-label" text-anchor="start">systems_it · empty</text>
+<line x1="620.6" y1="514.0" x2="726.4" y2="514.0" class="interval cold"/>
+<line x1="620.6" y1="509.0" x2="620.6" y2="519.0" class="cap cold"/>
+<line x1="726.4" y1="509.0" x2="726.4" y2="519.0" class="cap cold"/>
+<circle cx="675.0" cy="514.0" r="7" class="point cold"/>
+<text x="738.4" y="519.0" class="value" text-anchor="start">1.067×</text>
+<text x="75.0" y="553.0" class="row-label" text-anchor="start">systems_it · retained</text>
+<line x1="565.0" y1="548.0" x2="668.1" y2="548.0" class="interval retained"/>
+<line x1="565.0" y1="543.0" x2="565.0" y2="553.0" class="cap retained"/>
+<line x1="668.1" y1="543.0" x2="668.1" y2="553.0" class="cap retained"/>
+<path d="M 600.3 540.0 L 608.3 548.0 L 600.3 556.0 L 592.3 548.0 Z" class="point retained"/>
+<text x="680.1" y="553.0" class="value" text-anchor="start">0.983×</text>
+<rect x="45" y="629.0" width="1230" height="386.0" class="panel"/>
+<text x="75.0" y="667.0" class="section-title" text-anchor="start">Token-length sensitivity</text>
+<text x="75.0" y="695.0" class="subtitle" text-anchor="start">python_code · LRU32 per layer · longer retained runs expose async overhead</text>
+<line x1="394.3" y1="711.0" x2="394.3" y2="985.0" class="grid"/>
+<text x="394.3" y="699.0" class="tick" text-anchor="middle">0.75×</text>
+<line x1="615.5" y1="711.0" x2="615.5" y2="985.0" class="baseline"/>
+<text x="615.5" y="699.0" class="tick" text-anchor="middle">1.00×</text>
+<line x1="836.8" y1="711.0" x2="836.8" y2="985.0" class="grid"/>
+<text x="836.8" y="699.0" class="tick" text-anchor="middle">1.25×</text>
+<line x1="1058.0" y1="711.0" x2="1058.0" y2="985.0" class="grid"/>
+<text x="1058.0" y="699.0" class="tick" text-anchor="middle">1.50×</text>
+<line x1="1235.0" y1="711.0" x2="1235.0" y2="985.0" class="grid"/>
+<text x="1235.0" y="699.0" class="tick" text-anchor="middle">1.70×</text>
+<text x="1235.0" y="671.0" class="hint" text-anchor="end">&gt; 1× = async faster</text>
+<text x="75.0" y="726.0" class="row-label" text-anchor="start">2 tokens · empty</text>
+<line x1="646.9" y1="721.0" x2="704.9" y2="721.0" class="interval cold"/>
+<line x1="646.9" y1="716.0" x2="646.9" y2="726.0" class="cap cold"/>
+<line x1="704.9" y1="716.0" x2="704.9" y2="726.0" class="cap cold"/>
+<circle cx="694.9" cy="721.0" r="7" class="point cold"/>
+<text x="716.9" y="726.0" class="value" text-anchor="start">1.090×</text>
+<text x="75.0" y="760.0" class="row-label" text-anchor="start">2 tokens · retained</text>
+<line x1="413.0" y1="755.0" x2="898.8" y2="755.0" class="interval retained"/>
+<line x1="413.0" y1="750.0" x2="413.0" y2="760.0" class="cap retained"/>
+<line x1="898.8" y1="750.0" x2="898.8" y2="760.0" class="cap retained"/>
+<path d="M 748.6 747.0 L 756.6 755.0 L 748.6 763.0 L 740.6 755.0 Z" class="point retained"/>
+<text x="910.8" y="760.0" class="value" text-anchor="start">1.150×</text>
+<text x="75.0" y="794.0" class="row-label" text-anchor="start">8 tokens · empty</text>
+<line x1="652.5" y1="789.0" x2="922.8" y2="789.0" class="interval cold"/>
+<line x1="652.5" y1="784.0" x2="652.5" y2="794.0" class="cap cold"/>
+<line x1="922.8" y1="784.0" x2="922.8" y2="794.0" class="cap cold"/>
+<circle cx="869.1" cy="789.0" r="7" class="point cold"/>
+<text x="934.8" y="794.0" class="value" text-anchor="start">1.287×</text>
+<text x="75.0" y="828.0" class="row-label" text-anchor="start">8 tokens · retained</text>
+<line x1="528.2" y1="823.0" x2="737.2" y2="823.0" class="interval retained"/>
+<line x1="528.2" y1="818.0" x2="528.2" y2="828.0" class="cap retained"/>
+<line x1="737.2" y1="818.0" x2="737.2" y2="828.0" class="cap retained"/>
+<path d="M 728.4 815.0 L 736.4 823.0 L 728.4 831.0 L 720.4 823.0 Z" class="point retained"/>
+<text x="749.2" y="828.0" class="value" text-anchor="start">1.128×</text>
+<text x="75.0" y="862.0" class="row-label" text-anchor="start">32 tokens · empty</text>
+<line x1="428.3" y1="857.0" x2="703.2" y2="857.0" class="interval cold"/>
+<line x1="428.3" y1="852.0" x2="428.3" y2="862.0" class="cap cold"/>
+<line x1="703.2" y1="852.0" x2="703.2" y2="862.0" class="cap cold"/>
+<circle cx="702.9" cy="857.0" r="7" class="point cold"/>
+<text x="715.2" y="862.0" class="value" text-anchor="start">1.099×</text>
+<text x="75.0" y="896.0" class="row-label" text-anchor="start">32 tokens · retained</text>
+<line x1="480.9" y1="891.0" x2="628.8" y2="891.0" class="interval retained"/>
+<line x1="480.9" y1="886.0" x2="480.9" y2="896.0" class="cap retained"/>
+<line x1="628.8" y1="886.0" x2="628.8" y2="896.0" class="cap retained"/>
+<path d="M 485.0 883.0 L 493.0 891.0 L 485.0 899.0 L 477.0 891.0 Z" class="point retained"/>
+<text x="640.8" y="896.0" class="value" text-anchor="start">0.853×</text>
+<text x="75.0" y="930.0" class="row-label" text-anchor="start">64 tokens · empty</text>
+<line x1="441.3" y1="925.0" x2="636.8" y2="925.0" class="interval cold"/>
+<line x1="441.3" y1="920.0" x2="441.3" y2="930.0" class="cap cold"/>
+<line x1="636.8" y1="920.0" x2="636.8" y2="930.0" class="cap cold"/>
+<circle cx="623.8" cy="925.0" r="7" class="point cold"/>
+<text x="648.8" y="930.0" class="value" text-anchor="start">1.009×</text>
+<text x="75.0" y="964.0" class="row-label" text-anchor="start">64 tokens · retained</text>
+<line x1="443.8" y1="959.0" x2="613.4" y2="959.0" class="interval retained"/>
+<line x1="443.8" y1="954.0" x2="443.8" y2="964.0" class="cap retained"/>
+<line x1="613.4" y1="954.0" x2="613.4" y2="964.0" class="cap retained"/>
+<path d="M 499.9 951.0 L 507.9 959.0 L 499.9 967.0 L 491.9 959.0 Z" class="point retained"/>
+<text x="625.4" y="964.0" class="value" text-anchor="start">0.869×</text>
+<rect x="45" y="1040.0" width="1230" height="386.0" class="panel"/>
+<text x="75.0" y="1078.0" class="section-title" text-anchor="start">Cache-capacity sensitivity</text>
+<text x="75.0" y="1106.0" class="subtitle" text-anchor="start">python_code · 16 tokens · *32-slot point comes from the separate core matrix</text>
+<line x1="394.3" y1="1122.0" x2="394.3" y2="1396.0" class="grid"/>
+<text x="394.3" y="1110.0" class="tick" text-anchor="middle">0.75×</text>
+<line x1="615.5" y1="1122.0" x2="615.5" y2="1396.0" class="baseline"/>
+<text x="615.5" y="1110.0" class="tick" text-anchor="middle">1.00×</text>
+<line x1="836.8" y1="1122.0" x2="836.8" y2="1396.0" class="grid"/>
+<text x="836.8" y="1110.0" class="tick" text-anchor="middle">1.25×</text>
+<line x1="1058.0" y1="1122.0" x2="1058.0" y2="1396.0" class="grid"/>
+<text x="1058.0" y="1110.0" class="tick" text-anchor="middle">1.50×</text>
+<line x1="1235.0" y1="1122.0" x2="1235.0" y2="1396.0" class="grid"/>
+<text x="1235.0" y="1110.0" class="tick" text-anchor="middle">1.70×</text>
+<text x="1235.0" y="1082.0" class="hint" text-anchor="end">&gt; 1× = async faster</text>
+<text x="75.0" y="1137.0" class="row-label" text-anchor="start">16 slots/layer · empty</text>
+<line x1="629.6" y1="1132.0" x2="891.5" y2="1132.0" class="interval cold"/>
+<line x1="629.6" y1="1127.0" x2="629.6" y2="1137.0" class="cap cold"/>
+<line x1="891.5" y1="1127.0" x2="891.5" y2="1137.0" class="cap cold"/>
+<circle cx="853.0" cy="1132.0" r="7" class="point cold"/>
+<text x="903.5" y="1137.0" class="value" text-anchor="start">1.268×</text>
+<text x="75.0" y="1171.0" class="row-label" text-anchor="start">16 slots/layer · retained</text>
+<line x1="591.6" y1="1166.0" x2="822.2" y2="1166.0" class="interval retained"/>
+<line x1="591.6" y1="1161.0" x2="591.6" y2="1171.0" class="cap retained"/>
+<line x1="822.2" y1="1161.0" x2="822.2" y2="1171.0" class="cap retained"/>
+<path d="M 763.2 1158.0 L 771.2 1166.0 L 763.2 1174.0 L 755.2 1166.0 Z" class="point retained"/>
+<text x="834.2" y="1171.0" class="value" text-anchor="start">1.167×</text>
+<text x="75.0" y="1205.0" class="row-label" text-anchor="start">24 slots/layer · empty</text>
+<line x1="526.4" y1="1200.0" x2="1048.2" y2="1200.0" class="interval cold"/>
+<line x1="526.4" y1="1195.0" x2="526.4" y2="1205.0" class="cap cold"/>
+<line x1="1048.2" y1="1195.0" x2="1048.2" y2="1205.0" class="cap cold"/>
+<circle cx="655.5" cy="1200.0" r="7" class="point cold"/>
+<text x="1060.2" y="1205.0" class="value" text-anchor="start">1.045×</text>
+<text x="75.0" y="1239.0" class="row-label" text-anchor="start">24 slots/layer · retained</text>
+<line x1="500.6" y1="1234.0" x2="705.9" y2="1234.0" class="interval retained"/>
+<line x1="500.6" y1="1229.0" x2="500.6" y2="1239.0" class="cap retained"/>
+<line x1="705.9" y1="1229.0" x2="705.9" y2="1239.0" class="cap retained"/>
+<path d="M 628.8 1226.0 L 636.8 1234.0 L 628.8 1242.0 L 620.8 1234.0 Z" class="point retained"/>
+<text x="717.9" y="1239.0" class="value" text-anchor="start">1.015×</text>
+<text x="75.0" y="1273.0" class="row-label" text-anchor="start">32* slots/layer · empty</text>
+<line x1="695.5" y1="1268.0" x2="856.0" y2="1268.0" class="interval cold"/>
+<line x1="695.5" y1="1263.0" x2="695.5" y2="1273.0" class="cap cold"/>
+<line x1="856.0" y1="1263.0" x2="856.0" y2="1273.0" class="cap cold"/>
+<circle cx="722.5" cy="1268.0" r="7" class="point cold"/>
+<text x="868.0" y="1273.0" class="value" text-anchor="start">1.121×</text>
+<text x="75.0" y="1307.0" class="row-label" text-anchor="start">32* slots/layer · retained</text>
+<line x1="505.5" y1="1302.0" x2="717.1" y2="1302.0" class="interval retained"/>
+<line x1="505.5" y1="1297.0" x2="505.5" y2="1307.0" class="cap retained"/>
+<line x1="717.1" y1="1297.0" x2="717.1" y2="1307.0" class="cap retained"/>
+<path d="M 513.7 1294.0 L 521.7 1302.0 L 513.7 1310.0 L 505.7 1302.0 Z" class="point retained"/>
+<text x="729.1" y="1307.0" class="value" text-anchor="start">0.885×</text>
+<text x="75.0" y="1341.0" class="row-label" text-anchor="start">40 slots/layer · empty</text>
+<line x1="666.1" y1="1336.0" x2="1173.2" y2="1336.0" class="interval cold"/>
+<line x1="666.1" y1="1331.0" x2="666.1" y2="1341.0" class="cap cold"/>
+<line x1="1173.2" y1="1331.0" x2="1173.2" y2="1341.0" class="cap cold"/>
+<circle cx="689.6" cy="1336.0" r="7" class="point cold"/>
+<text x="1185.2" y="1341.0" class="value" text-anchor="start">1.084×</text>
+<text x="75.0" y="1375.0" class="row-label" text-anchor="start">40 slots/layer · retained</text>
+<line x1="577.8" y1="1370.0" x2="854.7" y2="1370.0" class="interval retained"/>
+<line x1="577.8" y1="1365.0" x2="577.8" y2="1375.0" class="cap retained"/>
+<line x1="854.7" y1="1365.0" x2="854.7" y2="1375.0" class="cap retained"/>
+<path d="M 674.2 1362.0 L 682.2 1370.0 L 674.2 1378.0 L 666.2 1370.0 Z" class="point retained"/>
+<text x="866.7" y="1375.0" class="value" text-anchor="start">1.066×</text>
+<text x="45.0" y="1456.0" class="note" text-anchor="start">Above 1× means async used less wall time; below 1× is a regression. The scale is focused and does not start at zero.</text>
+<text x="45.0" y="1480.0" class="note" text-anchor="start">Pinned OLMoE · one GPU · seed 17 · no concurrency · warm host page cache · logical storage bytes, not physical NVMe telemetry.</text>
+</svg>

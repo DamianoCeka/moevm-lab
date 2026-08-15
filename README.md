@@ -169,6 +169,19 @@ an empty dynamic expert cache and `1.398x` with retained cache state.
 This covers one prompt and two teacher-forced tokens on one GPU. It does not
 prove physical NVMe activity, CUDA interval overlap or production throughput.
 See the [chart, exact table and evidence boundary](benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
+
+A larger follow-up on one RTX 6000 Ada completed 36 exact-gated pairs across
+five workloads, four token lengths and four GPU-cache capacities. In the
+five-workload 16-token core, the median per-repetition aggregate ratio was
+`1.208x` with an empty dynamic expert cache (17.24% median wall-time saving)
+and `1.057x` on the immediate retained repeat (5.41%). The broader matrix also
+found the current async path slower on retained 32- and 64-token `python_code`
+runs (`0.853x` and `0.869x`). Async therefore remains opt-in: the study shows a
+real opportunity and a concrete scheduling limit, not a universal speedup.
+
+![RTX 6000 Ada workload, token-length and cache-capacity sensitivity; ratios below one are async regressions](benchmarks/reference/paged-runtime-olmoe-runpod-rtx6000ada-study/study.svg)
+
+See the [sanitized 36-pair report and evidence boundary](benchmarks/reference/paged-runtime-olmoe-runpod-rtx6000ada-study/README.md).
 The benchmark opt-in is:
 
 ```powershell
@@ -304,12 +317,14 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 - The v0.2 OLMoE router capture and the new paged smoke are real; calibrated
   trace-replay speedups are still simulated and must not be mixed with runtime
   timings.
-- The current full-model runtime evidence covers one prompt, two output tokens,
-  one decode interval and uncontrolled OS page-cache state.
+- Full-model runtime evidence now includes a 36-pair RTX 6000 Ada study, but it
+  still covers one pinned checkpoint, one seed, teacher-forced continuation
+  tokens and no concurrent requests.
 - The opt-in async pipeline uses mmap-backed safetensors through the OS page
   cache. Its software overlap does not prove that physical NVMe reads overlap
-  compute. The published three-pair result is a provisional two-token smoke,
-  not a general speedup or production-throughput claim.
+  compute. The larger study contains retained-cache regressions and remains a
+  controlled research result, not a general speedup or production-throughput
+  claim.
 - Current async tests establish bounded scheduling capability and numerical
   parity. They do not measure an H2D/compute interval intersection and therefore
   are not evidence that temporal overlap occurred on a particular run.

@@ -12,6 +12,7 @@ import platform
 import re
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,15 @@ def _write_json(path: Path, payload: object) -> None:
         json.dumps(payload, allow_nan=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _serialized_device_map(model: Any) -> dict[str, str]:
+    """Return a stable device map for dispatched and fully resident models."""
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, Mapping) and device_map:
+        return {str(key): str(value) for key, value in device_map.items()}
+    device = getattr(model, "device", None)
+    return {"": str(device)} if device is not None else {}
 
 
 def _load_workloads(path: Path, selected_ids: set[str]) -> list[dict[str, str]]:
@@ -430,9 +440,7 @@ def _capture_workload(
             "cuda_runtime": torch.version.cuda,
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "peak_vram_bytes": peak_vram_bytes,
-            "device_map": {
-                key: str(value) for key, value in model.hf_device_map.items()
-            },
+            "device_map": _serialized_device_map(model),
         },
     }
     metadata_path = output_dir / f"{workload['id']}.metadata.json"
