@@ -418,6 +418,50 @@ class PagedRuntimeTests(unittest.TestCase):
         torch.testing.assert_close(loaded.down, down)
         self.assertIsNone(cache._worker)
 
+    def test_async_capable_cache_switches_pipeline_at_drained_boundary(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        runtime = PagedExpertRuntime(cache)
+        self.addCleanup(cache.close)
+
+        cache.set_pipeline_mode("sync")
+        first_hidden = torch.ones(2, self.hidden_size)
+        first_index = torch.tensor([[0], [1]], dtype=torch.long)
+        first_weights = torch.ones(2, 1)
+        first = runtime.forward(0, first_hidden, first_index, first_weights)
+        torch.testing.assert_close(
+            first,
+            self._reference_forward(first_hidden, first_index, first_weights),
+        )
+        self.assertIsNone(cache._worker)
+
+        cache.set_pipeline_mode("async")
+        second_index = torch.tensor([[2], [3]], dtype=torch.long)
+        second = runtime.forward(0, first_hidden, second_index, first_weights)
+        torch.testing.assert_close(
+            second,
+            self._reference_forward(first_hidden, second_index, first_weights),
+        )
+        worker = cache._worker
+        self.assertIsNotNone(worker)
+
+        cache.set_pipeline_mode("sync")
+        cache.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual((cache.metrics().requests, cache.metrics().misses), (4, 4))
+
+    def test_sync_only_cache_cannot_enable_async_later(self) -> None:
+        cache = self._cache(2)
+        self.addCleanup(cache.close)
+
+        with self.assertRaisesRegex(RuntimeError, "async infrastructure"):
+            cache.set_pipeline_mode("async")
+        with self.assertRaisesRegex(ValueError, "pipeline_mode"):
+            cache.set_pipeline_mode("automatic")
+
     def test_async_lookahead_matches_sync_demand_and_lru_accounting(self) -> None:
         sync_cache = self._cache(2)
         async_cache = self._cache(
@@ -1204,6 +1248,49 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertTrue(any(event is not None for event in cache._slot_last_use_event))
         with self.assertRaisesRegex(RuntimeError, "raw CUDA weights are unsafe"):
             cache.get(ExpertKey(0, 0))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_pipeline_switch_is_numerically_stable(self) -> None:
+        device = "cuda"
+        cache = self._cache(
+            2,
+            device=device,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        hidden_states = torch.randn(2, self.hidden_size, device=device)
+        top_k_weights = torch.ones(2, 1, device=device)
+
+        cache.set_pipeline_mode("sync")
+        sync_index = torch.tensor([[0], [1]], device=device)
+        sync_output = runtime.forward(0, hidden_states, sync_index, top_k_weights)
+        torch.testing.assert_close(
+            sync_output,
+            self._reference_forward(hidden_states, sync_index, top_k_weights),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+        cache.set_pipeline_mode("async")
+        async_index = torch.tensor([[2], [3]], device=device)
+        async_output = runtime.forward(0, hidden_states, async_index, top_k_weights)
+        torch.testing.assert_close(
+            async_output,
+            self._reference_forward(hidden_states, async_index, top_k_weights),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+        cache.set_pipeline_mode("sync")
+        retained_output = runtime.forward(0, hidden_states, async_index, top_k_weights)
+        torch.testing.assert_close(retained_output, async_output)
+        self.assertEqual(cache.pipeline_mode, "sync")
+        self.assertEqual((cache.metrics().requests, cache.metrics().hits), (6, 2))
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

@@ -30,6 +30,11 @@ from moevm.olmoe_assets import (
     PINNED_SHARD_SHA256,
     PINNED_SHARD_SIZES,
 )
+from moevm.pipeline_profile import (
+    load_pipeline_profile,
+    result_binding,
+    validate_profile_binding,
+)
 
 _HASH_BLOCK_BYTES = 16 * 1024 * 1024
 _VRAM_SAFETY_MARGIN_BYTES = int(1.25 * 1024**3)
@@ -114,14 +119,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy", choices=("lru", "hybrid"), default="lru")
     parser.add_argument(
         "--pipeline",
-        choices=("sync", "async", "adaptive"),
+        choices=("sync", "async", "adaptive", "auto"),
         default="sync",
         help=(
             "Expert data path. Async uses one bounded storage worker and a "
             "dedicated CUDA H2D stream; adaptive uses it for routed-layer "
-            "calls that start with free slots and multiple misses; sync "
-            "preserves the v0.3.0 behavior."
+            "calls that start with free slots and multiple misses; auto uses "
+            "a measured hardware-bound profile; sync preserves the v0.3.0 "
+            "behavior."
         ),
+    )
+    parser.add_argument(
+        "--pipeline-profile",
+        help="Required for --pipeline auto; measured v1 selection profile.",
     )
     parser.add_argument(
         "--slots-per-layer",
@@ -180,7 +190,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--hotset-json is only valid with --policy hybrid")
     if args.teacher_force_reference and not args.reference_metadata:
         raise ValueError("--teacher-force-reference requires --reference-metadata")
-    if args.pipeline in ("async", "adaptive") and args.staging_slots < 2:
+    if args.pipeline == "auto" and not args.pipeline_profile:
+        raise ValueError("--pipeline auto requires --pipeline-profile")
+    if args.pipeline == "auto" and args.demo_mode:
+        raise ValueError("--pipeline auto is not available in --demo-mode")
+    if args.pipeline != "auto" and args.pipeline_profile:
+        raise ValueError("--pipeline-profile is only valid with --pipeline auto")
+    if args.pipeline in ("async", "adaptive", "auto") and args.staging_slots < 2:
         raise ValueError("async-capable pipeline requires at least two staging slots")
     output_path = Path(args.output).expanduser()
     if output_path.exists():
@@ -581,6 +597,7 @@ def _run_inference_pass(
     max_new_tokens: int,
     expert_bytes: int,
     forced_token_ids: list[int] | None = None,
+    pipeline_mode: str = "sync",
 ) -> dict[str, Any]:
     if forced_token_ids is not None and len(forced_token_ids) != max_new_tokens:
         raise ValueError("forced_token_ids must contain exactly max_new_tokens entries")
@@ -723,6 +740,7 @@ def _run_inference_pass(
     )
     return {
         "label": label,
+        "pipeline": pipeline_mode,
         "cache_state": (
             "cold dynamic expert cache after required static preload"
             if label == "cold_expert_cache"
@@ -897,6 +915,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     if source["tree_clean"] is not True and not args.demo_mode:
         raise RuntimeError("benchmark evidence requires a clean Git working tree")
     prompt = _resolve_prompt(args)
+    pipeline_profile = None
+    pipeline_profile_sha256 = None
+    if args.pipeline == "auto":
+        pipeline_profile, pipeline_profile_sha256 = load_pipeline_profile(
+            Path(args.pipeline_profile)
+        )
     snapshot = _validate_snapshot(Path(args.snapshot))
     output_path = Path(args.output).expanduser().resolve()
     if output_path.is_relative_to(snapshot):
@@ -944,6 +968,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     if device.index is None:
         device = torch.device("cuda", torch.cuda.current_device())
     torch.cuda.set_device(device)
+    device_name = torch.cuda.get_device_name(device)
+    device_uuid = str(torch.cuda.get_device_properties(device).uuid).lower()
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("the selected CUDA device must support BF16")
     torch.manual_seed(args.seed)
@@ -963,6 +989,21 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             if store.spec.dtype != torch.bfloat16:
                 raise RuntimeError("the pinned OLMoE expert store must be BF16")
             config_seconds = time.perf_counter() - config_started
+
+            encoded = tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=args.max_input_tokens,
+            )
+            input_ids = encoded["input_ids"].to(device)
+            attention_mask = encoded.get("attention_mask")
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids)
+            else:
+                attention_mask = attention_mask.to(device)
+            if input_ids.numel() == 0:
+                raise RuntimeError("tokenizer produced no input tokens")
 
             hotset_digest = None
             hotsets: dict[int, tuple[int, ...]] = {layer: () for layer in store.layers}
@@ -1009,6 +1050,68 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "device_total_vram_bytes": int(total_vram),
             }
 
+            package_versions = _package_versions()
+            if pipeline_profile is None:
+                pipeline_schedule = {
+                    "cold_expert_cache": args.pipeline,
+                    "repeat_retained_expert_cache": args.pipeline,
+                }
+            else:
+                expected_binding = result_binding(
+                    {
+                        "model": {
+                            "model_id": PINNED_MODEL_ID,
+                            "revision": PINNED_REVISION,
+                            "dtype": str(store.spec.dtype),
+                            "layers": len(store.layers),
+                            "experts_per_layer": config.num_experts,
+                            "top_k": config.num_experts_per_tok,
+                            "shards": {
+                                name: {"sha256": digest}
+                                for name, digest in sorted(PINNED_SHARD_SHA256.items())
+                            },
+                        },
+                        "runtime": {
+                            "device_uuid": device_uuid,
+                            "device_name": device_name,
+                            "policy": args.policy,
+                            "capacity_scope": "independent per-layer partitions",
+                            "hotset_sha256": hotset_digest,
+                            "budget": budget,
+                        },
+                        "workload": {
+                            "id": args.workload_id,
+                            "prompt_sha256": _prompt_sha256(prompt),
+                            "input_ids": [
+                                int(token) for token in input_ids[0].tolist()
+                            ],
+                            "input_tokens": int(input_ids.shape[-1]),
+                            "max_new_tokens": args.max_new_tokens,
+                            "decoding": (
+                                "teacher-forced reference with greedy predictions"
+                                if args.teacher_force_reference
+                                else "greedy"
+                            ),
+                            "seed": args.seed,
+                        },
+                        "source": source,
+                        "environment": {
+                            "python": platform.python_version(),
+                            "platform": platform.platform(),
+                            "packages": package_versions,
+                        },
+                    }
+                )
+                validate_profile_binding(pipeline_profile, expected_binding)
+                pipeline_schedule = dict(pipeline_profile["selection"])
+            budget["resolved_pipeline_by_pass"] = pipeline_schedule
+
+            cache_initial_mode = args.pipeline
+            if args.pipeline == "auto":
+                cache_initial_mode = (
+                    "async" if "async" in pipeline_schedule.values() else "sync"
+                )
+
             model_load_baseline = _reset_cuda_peak(torch)
             rss_before_load = _process_memory()
             meta_started = time.perf_counter()
@@ -1027,9 +1130,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 static_keys=static_keys,
                 staging_slots=args.staging_slots,
                 pin_staging=True,
-                pipeline_mode=args.pipeline,
+                pipeline_mode=cache_initial_mode,
             )
             stack.callback(cache.close)
+            if args.pipeline == "auto":
+                cache.set_pipeline_mode(pipeline_schedule["cold_expert_cache"])
             runtime = PagedExpertRuntime(cache)
             attach_transformers_olmoe_runtime(model, runtime)
             cache_allocation_seconds = time.perf_counter() - cache_started
@@ -1077,21 +1182,6 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "process_memory_after": _process_memory(),
             }
 
-            encoded = tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=args.max_input_tokens,
-            )
-            input_ids = encoded["input_ids"].to(device)
-            attention_mask = encoded.get("attention_mask")
-            if attention_mask is None:
-                attention_mask = torch.ones_like(input_ids)
-            else:
-                attention_mask = attention_mask.to(device)
-            if input_ids.numel() == 0:
-                raise RuntimeError("tokenizer produced no input tokens")
-
             cold = _run_inference_pass(
                 label="cold_expert_cache",
                 torch=torch,
@@ -1103,9 +1193,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 max_new_tokens=args.max_new_tokens,
                 expert_bytes=store.spec.size_bytes,
                 forced_token_ids=forced_token_ids,
+                pipeline_mode=pipeline_schedule["cold_expert_cache"],
             )
             gc.collect()
             torch.cuda.empty_cache()
+            if args.pipeline == "auto":
+                cache.set_pipeline_mode(
+                    pipeline_schedule["repeat_retained_expert_cache"]
+                )
             warm = _run_inference_pass(
                 label="repeat_retained_expert_cache",
                 torch=torch,
@@ -1117,6 +1212,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 max_new_tokens=args.max_new_tokens,
                 expert_bytes=store.spec.size_bytes,
                 forced_token_ids=forced_token_ids,
+                pipeline_mode=pipeline_schedule["repeat_retained_expert_cache"],
             )
             if cold["generated_ids"] != warm["generated_ids"]:
                 raise RuntimeError("cold and warm greedy outputs differ")
@@ -1243,7 +1339,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             else (
                                 "The bounded async path is designed to permit mmap/page-cache service and pinned H2D to progress alongside expert compute inside a routed layer; this run does not itself measure interval overlap or prove physical NVMe activity."
                                 if args.pipeline == "async"
-                                else "The conservative adaptive path selects async only for routed-layer calls that start with a free eligible slot and at least two requested misses; calls starting full use sync. This rule is experimental and not a performance guarantee."
+                                else (
+                                    "The conservative adaptive path selects async only for routed-layer calls that start with a free eligible slot and at least two requested misses; calls starting full use sync. This rule is experimental and not a performance guarantee."
+                                    if args.pipeline == "adaptive"
+                                    else "Auto uses a measured profile bound to this GPU, model, workload, cache budget, and exact benchmark/runtime code. Calibration remains workload-specific and is not a universal performance guarantee."
+                                )
                             )
                         ),
                         "One prompt and at most a few greedy tokens cannot establish production performance.",
@@ -1270,12 +1370,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 },
                 "runtime": {
                     "device": str(device),
-                    "device_name": torch.cuda.get_device_name(),
-                    "device_uuid": str(
-                        torch.cuda.get_device_properties(device).uuid
-                    ).lower(),
+                    "device_name": device_name,
+                    "device_uuid": device_uuid,
                     "policy": args.policy,
                     "pipeline": args.pipeline,
+                    "resolved_pipeline_by_pass": pipeline_schedule,
+                    "pipeline_profile_sha256": pipeline_profile_sha256,
+                    "pipeline_profile_calibration_pairs": (
+                        None
+                        if pipeline_profile is None
+                        else pipeline_profile["calibration"]["pairs"]
+                    ),
                     "capacity_scope": "independent per-layer partitions",
                     "hotset_json": args.hotset_json,
                     "hotset_sha256": hotset_digest,
@@ -1309,7 +1414,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "environment": {
                     "python": platform.python_version(),
                     "platform": platform.platform(),
-                    "packages": _package_versions(),
+                    "packages": package_versions,
                 },
                 "source": source,
             }

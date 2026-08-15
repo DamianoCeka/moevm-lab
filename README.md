@@ -203,6 +203,16 @@ same minimum of two staging slots. Its output records how many forwards and
 experts used each path. This is a testable first policy, not a claim that the
 break-even rule is optimal.
 
+For repeatable hardware-specific selection, three or more controlled
+`sync`/`async` pairs can be converted into a create-only measured profile with
+`scripts/build_paged_pipeline_profile.py`. `--pipeline auto
+--pipeline-profile <profile.json>` then resolves cold and retained passes
+separately, drains the cache before switching, and rejects a profile if the GPU
+UUID, model, workload, cache budget, environment, benchmark script, or runtime
+hash differs. Async is selected only when it wins every calibration pair and
+clears the configured median-gain threshold; otherwise the profile falls back
+to sync. Profiles are local measurements, not portable speedup claims.
+
 See [Async expert pipeline](docs/ASYNC_PIPELINE.md) for lifecycle rules,
 measurement boundaries and current limitations.
 

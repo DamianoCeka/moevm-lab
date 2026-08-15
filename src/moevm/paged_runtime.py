@@ -630,6 +630,7 @@ class ExpertSlotCache:
         self.pin_staging = pin_staging
         self.staging_slots = staging_slots
         self.pipeline_mode = pipeline_mode
+        self._async_infrastructure_enabled = pipeline_mode in ("async", "adaptive")
         if (
             self._uses_async_infrastructure
             and self.device.type == "cuda"
@@ -680,7 +681,29 @@ class ExpertSlotCache:
 
     @property
     def _uses_async_infrastructure(self) -> bool:
-        return self.pipeline_mode in ("async", "adaptive")
+        return self._async_infrastructure_enabled
+
+    def set_pipeline_mode(self, pipeline_mode: str) -> None:
+        """Switch the active data path at a drained pass boundary.
+
+        A cache constructed as async-capable may switch between ``sync``,
+        ``async``, and ``adaptive`` without reallocating its bounded buffers.
+        A cache constructed in synchronous mode cannot enable asynchronous
+        execution later because it has no worker/stream lifecycle to own.
+        """
+        if pipeline_mode not in ("sync", "async", "adaptive"):
+            raise ValueError("pipeline_mode must be 'sync', 'async', or 'adaptive'")
+        with self.execution_lock:
+            if self._closed:
+                raise RuntimeError("expert slot cache is closed")
+            if pipeline_mode in ("async", "adaptive") and not (
+                self._async_infrastructure_enabled
+            ):
+                raise RuntimeError(
+                    "cache was not constructed with async infrastructure"
+                )
+            self.wait_idle()
+            self.pipeline_mode = pipeline_mode
 
     @property
     def allocated_cache_bytes(self) -> int:
