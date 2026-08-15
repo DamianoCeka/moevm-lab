@@ -184,7 +184,6 @@ class StaticSiteTests(unittest.TestCase):
         self.assertEqual(2, self.html.count('class="route-packet"'))
         self.assertEqual(3, self.html.count('class="legend-line '))
         self.assertNotIn('class="transfer ', self.html)
-        self.assertIn('mask: url("assets/icons/arrow-up-bold.svg")', css)
         self.assertRegex(
             css,
             r"\.route-promote\s*\{[^}]*--route-x:\s*41\.44%;",
@@ -193,6 +192,8 @@ class StaticSiteTests(unittest.TestCase):
             css,
             r"\.route-prefetch\s*\{[^}]*--route-x:\s*59\.78%;",
         )
+        self.assertIn('class="route-label">Demand</span>', self.html)
+        self.assertIn('class="route-label">Prefetch · Evict</span>', self.html)
         self.assertIn(
             'class="expert expert-active expert-path-active">E01</span>', self.html
         )

@@ -440,43 +440,44 @@ h3 {
   color: var(--coral);
 }
 
-.route-segment,
+.route-track,
 .route-arrow,
 .route-packet {
   position: absolute;
 }
 
-.route-target {
+.route-track {
   top: 0;
   left: calc(var(--route-x) - 1.5px);
-  width: 0;
+  width: 2.2px;
   height: 100%;
-  border-left: 3px solid currentColor;
-}
-
-.route-bridge {
-  display: none;
-}
-
-.route-source {
-  display: none;
-}
-
-.route-promote .route-target {
-  border-left-style: dashed;
+  border-radius: 999px;
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.72) 8%,
+    rgba(255, 255, 255, 0) 8%,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0.8) 34%,
+    rgba(255, 255, 255, 0) 34.7%,
+    rgba(255, 255, 255, 0) 100%
+  );
 }
 
 .route-arrow {
   top: -0.45rem;
   left: calc(var(--route-x) - 0.48rem);
-  width: 0.96rem;
-  height: 0.96rem;
-  background: currentColor;
-  mask: url("assets/icons/arrow-up-bold.svg") center / contain no-repeat;
+  width: 0;
+  height: 0;
+  border-left: 0.52rem solid transparent;
+  border-right: 0.52rem solid transparent;
+  border-bottom: 0.84rem solid currentColor;
+  border-top: 0;
+  filter: drop-shadow(0 0 0.42rem currentColor);
 }
 
 .route-prefetch .route-arrow {
-  transform: rotate(180deg);
+  border-top: 0.84rem solid currentColor;
+  border-bottom: 0;
   top: auto;
   bottom: -0.45rem;
 }
@@ -493,7 +494,33 @@ h3 {
   opacity: 0;
 }
 
-.route-promote .route-segment {
+.route-label {
+  top: -0.15rem;
+  right: 0;
+  left: 0;
+  margin-inline: auto;
+  width: max-content;
+  position: absolute;
+  padding: 0.17rem 0.56rem 0.15rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.route-label {
+  opacity: 0.85;
+}
+
+.route-prefetch .route-label {
+  top: auto;
+  bottom: -0.4rem;
+}
+
+.route-promote .route-track {
   animation: upper-link-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
@@ -501,7 +528,7 @@ h3 {
   animation: upper-packet 4.6s ease-in-out 0.2s infinite both;
 }
 
-.route-prefetch .route-segment {
+.route-prefetch .route-track {
   animation: lower-link-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
@@ -512,7 +539,7 @@ h3 {
 .motion-toggle:not(:checked) ~ .tier .expert-path-source,
 .motion-toggle:not(:checked) ~ .tier .expert-path-cache,
 .motion-toggle:not(:checked) ~ .tier .expert-path-active,
-.motion-toggle:not(:checked) ~ .route .route-segment,
+.motion-toggle:not(:checked) ~ .route .route-track,
 .motion-toggle:not(:checked) ~ .route .route-arrow,
 .motion-toggle:not(:checked) ~ .route .route-packet {
   animation-play-state: paused;
@@ -1234,22 +1261,15 @@ h3 {
     justify-self: center;
   }
 
-  .route-target {
+  .route-track {
     top: 0;
     left: calc(50% - 1.5px);
     height: 100%;
   }
 
-  .route-bridge,
-  .route-source {
-    display: none;
-  }
-
   .route-arrow {
     left: calc(50% - 0.48rem);
     top: -0.45rem;
-    width: 0.96rem;
-    height: 0.96rem;
   }
 
   .route-prefetch .route-packet {
@@ -1404,7 +1424,7 @@ h3 {
   .memory-system .expert-path-source,
   .memory-system .expert-path-cache,
   .memory-system .expert-path-active,
-  .memory-system .route-segment,
+  .memory-system .route-track,
   .memory-system .route-arrow,
   .memory-system .route-packet {
     animation: none !important;
