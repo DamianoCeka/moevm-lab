@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added opt-in same-device CUDA-event telemetry for paged-expert H2D and
+  expert-compute intervals, a fail-closed telemetry-aware pair gate, and a
+  create-only accessible SVG timeline renderer. This instruments one model call
+  at a time; it does not claim physical NVMe overlap or a general speedup.
 - Added a public, non-confidential commercial inquiry path and a fixed-scope
   design-partner offer for model/hardware fit audits, while keeping the
   community core Apache-2.0 and explicitly avoiding guaranteed performance or

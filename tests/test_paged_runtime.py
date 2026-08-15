@@ -20,6 +20,8 @@ if torch is not None:
         ExpertSlotCache,
         PagedExpertRuntime,
         SafetensorExpertStore,
+        _cuda_timeline_payload,
+        _CudaTimelineEventSpan,
         attach_transformers_olmoe_runtime,
         load_non_expert_weights_into_meta_model,
         register_transformers_paged_experts,
@@ -121,6 +123,96 @@ class PagedRuntimeTests(unittest.TestCase):
             states *= top_k_weights[token_index, top_k_position, None]
             output.index_add_(0, token_index, states)
         return output
+
+    def test_cuda_timeline_payload_uses_one_origin_and_retains_expert_labels(
+        self,
+    ) -> None:
+        class FakeEvent:
+            def __init__(self, timestamp_ms: float) -> None:
+                self.timestamp_ms = timestamp_ms
+
+            @staticmethod
+            def query() -> bool:
+                return True
+
+        class FakeOrigin:
+            @staticmethod
+            def elapsed_time(event: FakeEvent) -> float:
+                return event.timestamp_ms
+
+        payload = _cuda_timeline_payload(
+            FakeOrigin(),
+            [
+                _CudaTimelineEventSpan(
+                    lane="h2d",
+                    key=ExpertKey(0, 1),
+                    sequence=0,
+                    started_event=FakeEvent(1.0),
+                    ended_event=FakeEvent(5.0),
+                ),
+                _CudaTimelineEventSpan(
+                    lane="expert_compute",
+                    key=ExpertKey(0, 2),
+                    sequence=1,
+                    started_event=FakeEvent(3.0),
+                    ended_event=FakeEvent(8.0),
+                ),
+            ],
+        )
+
+        self.assertEqual(payload["status"], "measured")
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["unit"], "milliseconds")
+        self.assertEqual(payload["spans"][0]["name"], "h2d:0:L0:E1")
+        self.assertEqual(payload["spans"][1]["name"], "expert_compute:1:L0:E2")
+        self.assertEqual(payload["summary"]["overlap"]["duration_ms"], 2.0)
+
+    def test_cuda_timeline_scope_serializes_one_runtime_for_its_full_lifetime(
+        self,
+    ) -> None:
+        runtime = PagedExpertRuntime(self._cache(2))
+        capture = object()
+        runtime._begin_cuda_timeline_capture = lambda: capture  # type: ignore[method-assign]
+        runtime._end_cuda_timeline_capture = (  # type: ignore[method-assign]
+            lambda _capture, *, failed: None
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        contender_entered = threading.Event()
+        failures: list[Exception] = []
+
+        def hold_capture() -> None:
+            try:
+                with runtime.cuda_timeline_capture():
+                    entered.set()
+                    if not release.wait(timeout=2.0):
+                        raise TimeoutError("test did not release timeline scope")
+            except (
+                RuntimeError,
+                TimeoutError,
+            ) as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        def contend_for_runtime() -> None:
+            with runtime._forward_lock:
+                contender_entered.set()
+
+        holder = threading.Thread(target=hold_capture)
+        contender = threading.Thread(target=contend_for_runtime)
+        holder.start()
+        try:
+            self.assertTrue(entered.wait(timeout=1.0))
+            contender.start()
+            self.assertFalse(contender_entered.wait(timeout=0.1))
+        finally:
+            release.set()
+            holder.join(timeout=2.0)
+            contender.join(timeout=2.0)
+
+        self.assertFalse(holder.is_alive())
+        self.assertFalse(contender.is_alive())
+        self.assertFalse(failures)
+        self.assertTrue(contender_entered.is_set())
 
     def test_store_indexes_and_packs_a_cross_shard_expert(self) -> None:
         key = ExpertKey(0, 1)
@@ -1248,6 +1340,86 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertTrue(any(event is not None for event in cache._slot_last_use_event))
         with self.assertRaisesRegex(RuntimeError, "raw CUDA weights are unsafe"):
             cache.get(ExpertKey(0, 0))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_capture_records_h2d_and_expert_compute(self) -> None:
+        device = "cuda"
+        generator = torch.Generator().manual_seed(920)
+        hidden_states = torch.randn(3, self.hidden_size, generator=generator).to(device)
+        top_k_index = torch.tensor([[0, 1], [2, 1], [0, 2]], device=device)
+        top_k_weights = torch.rand(3, 2, generator=generator).to(device)
+        cache = self._cache(
+            2,
+            device=device,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        alternate_stream = torch.cuda.Stream(device=device)
+        alternate_stream.wait_stream(torch.cuda.current_stream(device))
+        with runtime.cuda_timeline_capture() as capture:
+            with torch.cuda.stream(alternate_stream):
+                actual = runtime.forward(
+                    0,
+                    hidden_states,
+                    top_k_index,
+                    top_k_weights,
+                )
+            torch.cuda.current_stream(device).wait_stream(alternate_stream)
+            torch.cuda.synchronize()
+
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        self.assertIsNotNone(capture.result)
+        timeline = capture.result
+        self.assertEqual(timeline["status"], "measured")
+        self.assertGreater(timeline["summary"]["transfer"]["interval_count"], 0)
+        self.assertGreater(timeline["summary"]["compute"]["interval_count"], 0)
+        self.assertGreaterEqual(timeline["summary"]["overlap"]["duration_ms"], 0.0)
+        self.assertTrue(all(span["layer"] == 0 for span in timeline["spans"]))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_sync_control_has_no_h2d_compute_overlap(self) -> None:
+        device = "cuda"
+        generator = torch.Generator().manual_seed(921)
+        hidden_states = torch.randn(3, self.hidden_size, generator=generator).to(device)
+        top_k_index = torch.tensor([[0, 1], [2, 1], [0, 2]], device=device)
+        top_k_weights = torch.rand(3, 2, generator=generator).to(device)
+        cache = self._cache(2, device=device)
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+
+        with runtime.cuda_timeline_capture() as capture:
+            actual = runtime.forward(
+                0,
+                hidden_states,
+                top_k_index,
+                top_k_weights,
+            )
+            torch.cuda.synchronize()
+
+        torch.testing.assert_close(
+            actual,
+            self._reference_forward(hidden_states, top_k_index, top_k_weights),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        self.assertIsNotNone(capture.result)
+        timeline = capture.result
+        self.assertEqual(timeline["status"], "measured")
+        self.assertEqual(timeline["summary"]["overlap"]["duration_ms"], 0.0)
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

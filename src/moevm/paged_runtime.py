@@ -46,6 +46,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
         "moevm.paged_runtime requires the 'real-traces' optional dependencies"
     ) from exc
 
+from .timeline_metrics import CudaInterval, summarize_cuda_timeline
 from .types import ExpertKey
 
 _PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
@@ -475,6 +476,219 @@ class _MutableMetrics:
 
 
 @dataclass(slots=True)
+class _CudaTimelineEventSpan:
+    """One CUDA-event interval emitted by a pass-scoped timeline capture."""
+
+    lane: str
+    key: ExpertKey
+    sequence: int
+    started_event: Any
+    ended_event: Any
+
+
+def _cuda_timeline_payload(
+    origin_event: Any,
+    spans: Iterable[_CudaTimelineEventSpan],
+) -> dict[str, Any]:
+    """Materialize one same-device CUDA timeline after its events complete.
+
+    The caller must synchronize the selected device before calling this helper.
+    Keeping event-to-timestamp conversion separate from CUDA scheduling makes the
+    evidence schema testable with small fake event objects on CPU-only hosts.
+    """
+
+    transfer_intervals: list[CudaInterval] = []
+    compute_intervals: list[CudaInterval] = []
+    raw_spans: list[dict[str, Any]] = []
+    for span in spans:
+        if not bool(span.started_event.query()) or not bool(span.ended_event.query()):
+            raise RuntimeError("CUDA timeline event did not complete before capture")
+        started_ms = float(origin_event.elapsed_time(span.started_event))
+        ended_ms = float(origin_event.elapsed_time(span.ended_event))
+        # CUDA events from both streams are causally ordered after the shared
+        # origin.  A materially reversed pair would make the evidence invalid,
+        # rather than something to silently clamp or reorder.
+        if ended_ms < started_ms:
+            raise RuntimeError("CUDA timeline event end precedes its start")
+        name = f"{span.lane}:{span.sequence}:L{span.key.layer}:E{span.key.expert}"
+        interval = CudaInterval(name=name, start_ms=started_ms, end_ms=ended_ms)
+        target = transfer_intervals if span.lane == "h2d" else compute_intervals
+        target.append(interval)
+        raw_spans.append(
+            {
+                "lane": span.lane,
+                "sequence": span.sequence,
+                "layer": span.key.layer,
+                "expert": span.key.expert,
+                **interval.to_dict(),
+            }
+        )
+
+    raw_spans.sort(
+        key=lambda item: (
+            float(item["start_ms"]),
+            float(item["end_ms"]),
+            str(item["lane"]),
+            int(item["sequence"]),
+        )
+    )
+    summary = summarize_cuda_timeline(
+        transfers=transfer_intervals,
+        compute=compute_intervals,
+    )
+    h2d_count = int(summary["transfer"]["interval_count"])
+    compute_count = int(summary["compute"]["interval_count"])
+    if h2d_count and compute_count:
+        status = "measured"
+        reason = None
+    elif not h2d_count:
+        status = "not_applicable"
+        reason = "no expert H2D intervals were observed in this model call"
+    else:
+        status = "not_applicable"
+        reason = "no expert compute intervals were observed in this model call"
+    return {
+        "schema_version": 1,
+        "status": status,
+        "method": "cuda_events_v1",
+        "scope": "paged_expert_h2d_vs_expert_compute",
+        "unit": "milliseconds",
+        "complete": True,
+        "reason": reason,
+        "spans": raw_spans,
+        "summary": {key: value for key, value in summary.items() if key != "intervals"},
+    }
+
+
+class _CudaTimelineCapture:
+    """Collect H2D and paged-expert compute spans for one model invocation."""
+
+    def __init__(self, device: torch.device) -> None:
+        if device.type != "cuda":
+            raise ValueError("CUDA timeline capture requires a CUDA device")
+        self.device = device
+        self._origin_event: Any | None = None
+        self._spans: list[_CudaTimelineEventSpan] = []
+        self._next_sequence = 0
+        self._finished = False
+        self.result: dict[str, Any] | None = None
+
+    def begin(self, compute_stream: Any) -> None:
+        if self._origin_event is not None:
+            raise RuntimeError("CUDA timeline capture has already started")
+        origin = torch.cuda.Event(enable_timing=True)
+        origin.record(compute_stream)
+        self._origin_event = origin
+
+    @property
+    def origin_event(self) -> Any:
+        if self._origin_event is None:
+            raise RuntimeError("CUDA timeline capture has not started")
+        return self._origin_event
+
+    def wait_on_origin(self, stream: Any) -> None:
+        """Make an instrumented stream causally comparable with the origin."""
+        stream.wait_event(self.origin_event)
+
+    def record_transfer(
+        self, key: ExpertKey, started_event: Any, ended_event: Any
+    ) -> None:
+        self._record("h2d", key, started_event, ended_event)
+
+    def begin_compute(self, key: ExpertKey, stream: Any) -> Any:
+        # A caller may enter the capture on one stream and run a model forward
+        # on another.  Make every instrumented compute stream depend on the
+        # common origin before using elapsed-time comparisons across streams.
+        self.wait_on_origin(stream)
+        started = torch.cuda.Event(enable_timing=True)
+        started.record(stream)
+        return started
+
+    def end_compute(self, key: ExpertKey, started_event: Any, stream: Any) -> None:
+        ended = torch.cuda.Event(enable_timing=True)
+        ended.record(stream)
+        self._record("expert_compute", key, started_event, ended)
+
+    def _record(
+        self,
+        lane: str,
+        key: ExpertKey,
+        started_event: Any,
+        ended_event: Any,
+    ) -> None:
+        if self._finished:
+            raise RuntimeError("cannot append spans to a finished CUDA timeline")
+        self._spans.append(
+            _CudaTimelineEventSpan(
+                lane=lane,
+                key=key,
+                sequence=self._next_sequence,
+                started_event=started_event,
+                ended_event=ended_event,
+            )
+        )
+        self._next_sequence += 1
+
+    def finish(self) -> dict[str, Any]:
+        if self._finished:
+            if self.result is None:  # pragma: no cover - internal invariant
+                raise RuntimeError("finished CUDA timeline is missing its result")
+            return self.result
+        torch.cuda.synchronize(self.device)
+        self.result = _cuda_timeline_payload(self.origin_event, self._spans)
+        self._finished = True
+        return self.result
+
+    def abort(self) -> None:
+        """Release event references after a failed model invocation."""
+        self._spans.clear()
+        self._finished = True
+
+
+class _CudaTimelineCaptureScope:
+    """Context manager that binds one capture to a paged runtime invocation."""
+
+    def __init__(self, runtime: PagedExpertRuntime) -> None:
+        self._runtime = runtime
+        self._capture: _CudaTimelineCapture | None = None
+        self._holds_forward_lock = False
+
+    def __enter__(self) -> _CudaTimelineCapture:
+        # Keep one runtime exclusively owned for the whole model invocation.
+        # `runtime.forward()` is reentrant on this RLock for the owner thread,
+        # while another thread cannot append unrelated spans to this capture.
+        self._runtime._forward_lock.acquire()
+        self._holds_forward_lock = True
+        try:
+            self._capture = self._runtime._begin_cuda_timeline_capture()
+            return self._capture
+        except BaseException:
+            self._runtime._forward_lock.release()
+            self._holds_forward_lock = False
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: object,
+    ) -> bool:
+        capture = self._capture
+        if capture is None:  # pragma: no cover - context protocol invariant
+            return False
+        try:
+            self._runtime._end_cuda_timeline_capture(
+                capture,
+                failed=exc_type is not None,
+            )
+        finally:
+            if self._holds_forward_lock:
+                self._runtime._forward_lock.release()
+                self._holds_forward_lock = False
+        return False
+
+
+@dataclass(slots=True)
 class ExpertLoadTicket:
     """Single-flight handle for one asynchronous expert load."""
 
@@ -492,6 +706,7 @@ class ExpertLoadTicket:
     transfer_started_event: Any | None = None
     state: str = "queued"
     counted_as_hit: bool = False
+    cuda_timeline: _CudaTimelineCapture | None = None
 
 
 @dataclass(slots=True)
@@ -848,16 +1063,26 @@ class ExpertSlotCache:
         with self.execution_lock:
             return self._submit_locked(key, account_request=True)
 
-    def _submit_lookahead(self, key: ExpertKey) -> ExpertLoadTicket:
+    def _submit_lookahead(
+        self,
+        key: ExpertKey,
+        *,
+        cuda_timeline: _CudaTimelineCapture | None = None,
+    ) -> ExpertLoadTicket:
         """Schedule storage without changing demand or LRU accounting."""
         with self.execution_lock:
-            return self._submit_locked(key, account_request=False)
+            return self._submit_locked(
+                key,
+                account_request=False,
+                cuda_timeline=cuda_timeline,
+            )
 
     def _submit_locked(
         self,
         key: ExpertKey,
         *,
         account_request: bool,
+        cuda_timeline: _CudaTimelineCapture | None = None,
     ) -> ExpertLoadTicket:
         if not self._uses_async_infrastructure:
             raise RuntimeError("submit requires an async-capable pipeline mode")
@@ -897,6 +1122,7 @@ class ExpertSlotCache:
                 key=key,
                 queued_at=time.perf_counter(),
                 request_clock=self._clock if account_request else 0,
+                cuda_timeline=cuda_timeline,
             )
             self._pending_by_key[key] = ticket
             self._metrics.pending_loads_peak = max(
@@ -1095,10 +1321,27 @@ class ExpertSlotCache:
         slot: int,
         staging_gate_up: torch.Tensor,
         staging_down: torch.Tensor,
+        *,
+        cuda_timeline: _CudaTimelineCapture | None = None,
+        key: ExpertKey | None = None,
     ) -> None:
+        started_event = None
+        ready_event = None
+        if cuda_timeline is not None:
+            if self.device.type != "cuda" or key is None:
+                raise RuntimeError("CUDA timeline capture requires a CUDA expert key")
+            stream = torch.cuda.current_stream(self.device)
+            cuda_timeline.wait_on_origin(stream)
+            started_event = torch.cuda.Event(enable_timing=True)
+            ready_event = torch.cuda.Event(enable_timing=True)
+            started_event.record(stream)
         self._gate_up_slots[slot].copy_(staging_gate_up, non_blocking=False)
         self._down_slots[slot].copy_(staging_down, non_blocking=False)
+        if ready_event is not None:
+            ready_event.record(torch.cuda.current_stream(self.device))
         self._synchronize_device()
+        if started_event is not None and ready_event is not None and key is not None:
+            cuda_timeline.record_transfer(key, started_event, ready_event)
 
     def _enqueue_staging_to_slot(
         self,
@@ -1229,6 +1472,10 @@ class ExpertSlotCache:
         with self._condition:
             if ticket.destination_slot is not None:
                 return
+            if ticket.cuda_timeline is not None and self.device.type == "cuda":
+                if self._transfer_stream is None:  # pragma: no cover - invariant
+                    raise RuntimeError("CUDA transfer stream is unavailable")
+                ticket.cuda_timeline.wait_on_origin(self._transfer_stream)
             evicted_key = self._slot_to_key[slot]
             if evicted_key is not None and self.device.type == "cuda":
                 last_use = self._slot_last_use_event[slot]
@@ -1264,6 +1511,12 @@ class ExpertSlotCache:
                 with self._condition:
                     ticket.transfer_started_event = started_event
                     ticket.ready_event = ready_event
+                if ticket.cuda_timeline is not None:
+                    ticket.cuda_timeline.record_transfer(
+                        ticket.key,
+                        started_event,
+                        ready_event,
+                    )
             else:
                 self._copy_staging_to_slot(slot, staging_gate_up, staging_down)
                 with self._condition:
@@ -1388,7 +1641,12 @@ class ExpertSlotCache:
             lease.release_after(stream)
             return weights
 
-    def get(self, key: ExpertKey) -> ExpertWeights:
+    def get(
+        self,
+        key: ExpertKey,
+        *,
+        cuda_timeline: _CudaTimelineCapture | None = None,
+    ) -> ExpertWeights:
         """Return weights valid until a later miss reuses their cache slot."""
         if key not in self.store:
             raise KeyError(f"unknown expert: {key.compact()}")
@@ -1443,7 +1701,16 @@ class ExpertSlotCache:
 
             transfer_started = time.perf_counter()
             try:
-                self._copy_staging_to_slot(slot, staging_gate_up, staging_down)
+                if cuda_timeline is None:
+                    self._copy_staging_to_slot(slot, staging_gate_up, staging_down)
+                else:
+                    self._copy_staging_to_slot(
+                        slot,
+                        staging_gate_up,
+                        staging_down,
+                        cuda_timeline=cuda_timeline,
+                        key=key,
+                    )
             except BaseException:
                 self._slot_to_key[slot] = None
                 self._last_used[slot] = 0
@@ -1565,6 +1832,47 @@ class PagedExpertRuntime:
     def __init__(self, cache: ExpertSlotCache) -> None:
         self.cache = cache
         self._forward_lock = cache.execution_lock
+        self._active_cuda_timeline: _CudaTimelineCapture | None = None
+
+    def cuda_timeline_capture(self) -> _CudaTimelineCaptureScope:
+        """Capture one model-call H2D/expert-compute CUDA timeline.
+
+        The scope must include the caller's model invocation and its normal CUDA
+        synchronization.  It is deliberately opt-in because CUDA timing events
+        are instrumentation, not part of the default runtime data path.
+        """
+
+        return _CudaTimelineCaptureScope(self)
+
+    def _begin_cuda_timeline_capture(self) -> _CudaTimelineCapture:
+        with self._forward_lock:
+            if self.cache.device.type != "cuda":
+                raise RuntimeError("CUDA timeline capture requires a CUDA runtime")
+            if self._active_cuda_timeline is not None:
+                raise RuntimeError("a CUDA timeline capture is already active")
+            capture = _CudaTimelineCapture(self.cache.device)
+            capture.begin(torch.cuda.current_stream(self.cache.device))
+            self._active_cuda_timeline = capture
+            return capture
+
+    def _end_cuda_timeline_capture(
+        self,
+        capture: _CudaTimelineCapture,
+        *,
+        failed: bool,
+    ) -> None:
+        with self._forward_lock:
+            if self._active_cuda_timeline is not capture:
+                raise RuntimeError(
+                    "CUDA timeline capture does not belong to this runtime"
+                )
+            try:
+                if failed:
+                    capture.abort()
+                else:
+                    capture.finish()
+            finally:
+                self._active_cuda_timeline = None
 
     def forward(
         self,
@@ -1629,6 +1937,7 @@ class PagedExpertRuntime:
             if hidden_states.device.type == "cuda"
             else None
         )
+        cuda_timeline = self._active_cuda_timeline
         use_async = self.cache.pipeline_mode == "async"
         if self.cache.pipeline_mode == "adaptive" and expert_ids:
             # A previous external submission must not share staging with the
@@ -1643,8 +1952,14 @@ class PagedExpertRuntime:
                 initial_depth = min(self.cache.staging_slots, len(expert_ids))
                 while next_to_submit < initial_depth:
                     expert_id = expert_ids[next_to_submit]
-                    tickets[expert_id] = self.cache._submit_lookahead(
-                        ExpertKey(layer, expert_id)
+                    next_key = ExpertKey(layer, expert_id)
+                    tickets[expert_id] = (
+                        self.cache._submit_lookahead(next_key)
+                        if cuda_timeline is None
+                        else self.cache._submit_lookahead(
+                            next_key,
+                            cuda_timeline=cuda_timeline,
+                        )
                     )
                     next_to_submit += 1
             for expert_id in expert_ids:
@@ -1658,14 +1973,38 @@ class PagedExpertRuntime:
                     )
                     weights = lease.weights
                 else:
-                    weights = self.cache.get(ExpertKey(layer, expert_id))
+                    demand_key = ExpertKey(layer, expert_id)
+                    weights = (
+                        self.cache.get(demand_key)
+                        if cuda_timeline is None
+                        else self.cache.get(
+                            demand_key,
+                            cuda_timeline=cuda_timeline,
+                        )
+                    )
+                compute_started = None
                 try:
                     if use_async and next_to_submit < len(expert_ids):
                         next_expert = expert_ids[next_to_submit]
-                        tickets[next_expert] = self.cache._submit_lookahead(
-                            ExpertKey(layer, next_expert)
+                        next_key = ExpertKey(layer, next_expert)
+                        tickets[next_expert] = (
+                            self.cache._submit_lookahead(next_key)
+                            if cuda_timeline is None
+                            else self.cache._submit_lookahead(
+                                next_key,
+                                cuda_timeline=cuda_timeline,
+                            )
                         )
                         next_to_submit += 1
+                    if cuda_timeline is not None:
+                        if compute_stream is None:  # pragma: no cover - invariant
+                            raise RuntimeError(
+                                "CUDA timeline capture has no compute stream"
+                            )
+                        compute_started = cuda_timeline.begin_compute(
+                            ExpertKey(layer, expert_id),
+                            compute_stream,
+                        )
                     token_index, top_k_position = torch.where(top_k_index == expert_id)
                     current_state = hidden_states[token_index]
                     gate, up = torch_functional.linear(
@@ -1678,6 +2017,12 @@ class PagedExpertRuntime:
                         0, token_index, current.to(final_hidden_states.dtype)
                     )
                 finally:
+                    if compute_started is not None:
+                        cuda_timeline.end_compute(
+                            ExpertKey(layer, expert_id),
+                            compute_started,
+                            compute_stream,
+                        )
                     if lease is not None:
                         lease.release_after(compute_stream)
         except Exception:
