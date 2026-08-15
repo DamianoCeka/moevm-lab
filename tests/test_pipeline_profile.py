@@ -50,7 +50,12 @@ def _result(
             "benchmark_script_sha256": "a" * 64,
             "paged_runtime_sha256": "b" * 64,
         },
-        "reference_comparison": {"available": True, "matched": True},
+        "reference_comparison": {
+            "available": True,
+            "matched": True,
+            "mode": "teacher_forced",
+            "generated_token_ids": [1, 2],
+        },
         "model": {
             "model_id": "model",
             "revision": "c" * 40,
@@ -99,12 +104,14 @@ def _result(
                 "total_wall_seconds": cold_seconds,
                 "generated_ids": [1, 2],
                 "fed_token_ids": [1, 2],
+                "teacher_forced": True,
                 "metrics": _metrics(),
             },
             "repeat_retained_expert_cache": {
                 "total_wall_seconds": retained_seconds,
                 "generated_ids": [1, 2],
                 "fed_token_ids": [1, 2],
+                "teacher_forced": True,
                 "metrics": _metrics(),
             },
         },
@@ -164,6 +171,31 @@ class PipelineProfileTests(unittest.TestCase):
         path.write_text('{"schema_version": 1}', encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "kind"):
             load_pipeline_profile(path)
+
+    def test_teacher_forced_gate_allows_prediction_mismatch_but_not_wrong_feed(
+        self,
+    ) -> None:
+        pairs = self._pairs()
+        for sync_result, async_result in pairs:
+            sync_result["reference_comparison"]["matched"] = False
+            async_result["reference_comparison"]["matched"] = False
+        profile = build_measured_profile(pairs)
+        self.assertEqual(profile["calibration"]["pairs"], 3)
+
+        pairs[0][1]["passes"]["cold_expert_cache"]["fed_token_ids"] = [9, 9]
+        with self.assertRaisesRegex(ValueError, "exact reference IDs"):
+            build_measured_profile(pairs)
+
+    def test_autoregressive_gate_still_requires_exact_reference_match(self) -> None:
+        pairs = self._pairs()
+        for sync_result, async_result in pairs:
+            for result in (sync_result, async_result):
+                result["reference_comparison"]["mode"] = "autoregressive_exact_gate"
+                result["reference_comparison"]["matched"] = False
+                for measured_pass in result["passes"].values():
+                    measured_pass["teacher_forced"] = False
+        with self.assertRaisesRegex(ValueError, "autoregressive"):
+            build_measured_profile(pairs)
 
 
 if __name__ == "__main__":

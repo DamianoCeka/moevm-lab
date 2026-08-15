@@ -124,11 +124,15 @@ Then run the same bound workload:
   --staging-slots 2
 ```
 
-The builder first requires exact token identity and identical cache, eviction,
-storage and H2D primitives within every pair. It selects async for a pass only
-when async wins every pair and the median paired `sync / async` ratio clears
-the default 3% threshold. Mixed or smaller evidence selects sync. Cold and
-immediate retained passes are decided independently.
+The builder first requires exact sync/async prediction and feed identity plus
+identical cache, eviction, storage and H2D primitives within every pair. An
+autoregressive calibration must match its reference exactly. A teacher-forced
+calibration must feed the exact pinned reference IDs; its recorded greedy
+predictions may differ from the baseline only when sync and async remain
+identical to each other. It selects async for a pass only when async wins every
+pair and the median paired `sync / async` ratio clears the default 3% threshold.
+Mixed or smaller evidence selects sync. Cold and immediate retained passes are
+decided independently.
 
 The profile binds the selection to the exact GPU UUID and VRAM size, pinned
 checkpoint hashes, workload/token budget, cache policy and capacity, Python

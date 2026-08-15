@@ -44,6 +44,10 @@
   independently, switches only at a drained pass boundary, and rejects profiles
   that do not match the GPU, model, workload, budget, environment or source
   hashes.
+- Kept the profile reference gate strict but mode-aware: autoregressive runs
+  require exact baseline identity, while teacher-forced runs require the exact
+  pinned feed and exact sync/async prediction parity without misclassifying a
+  shared numerical prediction difference as a scheduling failure.
 - Added a deterministic study summarizer that recomputes pair gates, validates
   the exact experiment matrix and strips private execution paths, plus support
   for fully resident routing-capture models that do not expose an Accelerate
