@@ -419,24 +419,24 @@ h3 {
 }
 
 .route {
-  position: absolute;
+  position: relative;
   z-index: 4;
   color: var(--cyan);
   pointer-events: none;
+  align-self: center;
+  width: 100%;
+  height: 3.25rem;
+  margin-inline: auto;
 }
 
 .route-promote {
-  top: 8.6rem;
-  left: 41.44%;
-  width: 18.34%;
-  height: 9.86rem;
+  --route-x: 41.44%;
+  color: var(--cyan);
+  --packet-phase-offset: 0.42s;
 }
 
 .route-prefetch {
-  top: 22rem;
-  left: 59.78%;
-  width: 15.97%;
-  height: 10.07rem;
+  --route-x: 59.78%;
   color: var(--coral);
 }
 
@@ -447,62 +447,43 @@ h3 {
 }
 
 .route-target {
+  top: 0;
+  left: calc(var(--route-x) - 1.5px);
   width: 0;
+  height: 100%;
   border-left: 3px solid currentColor;
-}
-
-.route-target {
-  top: 0.58rem;
-  left: -1.5px;
-  height: calc(50% - 1.26rem);
 }
 
 .route-bridge {
-  top: calc(50% - 0.68rem);
-  right: 0.68rem;
-  left: -1.5px;
-  height: 0.68rem;
-  border-bottom: 3px solid currentColor;
-  border-left: 3px solid currentColor;
-  border-bottom-left-radius: 0.68rem;
+  display: none;
 }
 
 .route-source {
-  top: 50%;
-  right: -1.5px;
-  width: 0.68rem;
-  height: 50%;
-  border-top: 3px solid currentColor;
-  border-right: 3px solid currentColor;
-  border-top-right-radius: 0.68rem;
+  display: none;
 }
 
 .route-promote .route-target {
   border-left-style: dashed;
 }
 
-.route-promote .route-bridge {
-  border-bottom-style: dashed;
-  border-left-style: dashed;
-}
-
-.route-promote .route-source {
-  border-top-style: dashed;
-  border-right-style: dashed;
-}
-
 .route-arrow {
-  top: -0.38rem;
-  left: -0.75rem;
-  width: 1.5rem;
-  height: 1.5rem;
+  top: -0.45rem;
+  left: calc(var(--route-x) - 0.48rem);
+  width: 0.96rem;
+  height: 0.96rem;
   background: currentColor;
   mask: url("assets/icons/arrow-up-bold.svg") center / contain no-repeat;
 }
 
+.route-prefetch .route-arrow {
+  transform: rotate(180deg);
+  top: auto;
+  bottom: -0.45rem;
+}
+
 .route-packet {
-  bottom: -0.22rem;
-  left: calc(100% - 0.22rem);
+  top: calc(100% - 0.24rem);
+  left: calc(var(--route-x) - 0.24rem);
   width: 0.48rem;
   height: 0.48rem;
   border: 1px solid rgba(255, 255, 255, 0.72);
@@ -978,33 +959,23 @@ h3 {
   0%,
   13% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
   17% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  24% {
-    top: calc(50% - 0.24rem);
-    left: calc(100% - 0.24rem);
-    opacity: 1;
-  }
-  28% {
-    top: calc(50% - 0.24rem);
-    left: -0.24rem;
-    opacity: 1;
-  }
-  32% {
+  70% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  36%,
+  72%,
   100% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
 }
@@ -1043,33 +1014,23 @@ h3 {
   0%,
   45% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
   49% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  56% {
-    top: calc(50% - 0.24rem);
-    left: calc(100% - 0.24rem);
-    opacity: 1;
-  }
-  60% {
-    top: calc(50% - 0.24rem);
-    left: -0.24rem;
-    opacity: 1;
-  }
-  65% {
+  70% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  69%,
+  72%,
   100% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
 }
@@ -1274,11 +1235,9 @@ h3 {
   }
 
   .route-target {
-    top: 0.58rem;
+    top: 0;
     left: calc(50% - 1.5px);
-    height: calc(100% - 0.58rem);
-    border-bottom: 0;
-    border-bottom-left-radius: 0;
+    height: 100%;
   }
 
   .route-bridge,
@@ -1287,8 +1246,10 @@ h3 {
   }
 
   .route-arrow {
-    top: -0.38rem;
-    left: calc(50% - 0.75rem);
+    left: calc(50% - 0.48rem);
+    top: -0.45rem;
+    width: 0.96rem;
+    height: 0.96rem;
   }
 
   .route-prefetch .route-packet {

@@ -187,13 +187,12 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn('mask: url("assets/icons/arrow-up-bold.svg")', css)
         self.assertRegex(
             css,
-            r"\.route-promote\s*\{[^}]*left:\s*41\.44%;[^}]*width:\s*18\.34%;",
+            r"\.route-promote\s*\{[^}]*--route-x:\s*41\.44%;",
         )
         self.assertRegex(
             css,
-            r"\.route-prefetch\s*\{[^}]*left:\s*59\.78%;[^}]*width:\s*15\.97%;",
+            r"\.route-prefetch\s*\{[^}]*--route-x:\s*59\.78%;",
         )
-        self.assertRegex(css, r"\.route-bridge\s*\{[^}]*right:\s*0\.68rem;")
         self.assertIn(
             'class="expert expert-active expert-path-active">E01</span>', self.html
         )
