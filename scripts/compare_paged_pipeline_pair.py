@@ -596,6 +596,11 @@ def _compare_identity(sync: dict[str, Any], async_: dict[str, Any]) -> None:
     async_budget = dict(_mapping(async_runtime.get("budget"), "async.runtime.budget"))
     sync_budget.pop("pipeline", None)
     async_budget.pop("pipeline", None)
+    # This records the scheduling path resolved for each pass.  It is expected
+    # to differ between the sync and async arms, just like ``pipeline`` above;
+    # it is not a hardware/cache-budget identity field.
+    sync_budget.pop("resolved_pipeline_by_pass", None)
+    async_budget.pop("resolved_pipeline_by_pass", None)
     _require_equal(sync_budget, async_budget, "runtime.budget")
 
     for pass_name in PASS_NAMES:

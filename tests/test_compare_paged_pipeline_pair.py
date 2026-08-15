@@ -321,6 +321,23 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         self.assertEqual(retained["saving_seconds"], 1.5)
         self.assertAlmostEqual(retained["saving_fraction"], 0.25)
 
+    def test_mode_specific_resolved_pipeline_budget_is_not_an_identity_mismatch(
+        self,
+    ) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        for pass_name in _COMPARATOR.PASS_NAMES:
+            sync["runtime"]["budget"].setdefault("resolved_pipeline_by_pass", {})[
+                pass_name
+            ] = "sync"
+            async_["runtime"]["budget"].setdefault("resolved_pipeline_by_pass", {})[
+                pass_name
+            ] = "async"
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
     def test_cuda_overlap_telemetry_setting_must_match_within_a_pair(self) -> None:
         sync = self._report("sync")
         async_ = self._report("async")
