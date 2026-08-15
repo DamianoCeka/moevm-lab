@@ -17,10 +17,11 @@
 
 """Bounded, read-only expert paging primitives for real OLMoE checkpoints.
 
-This module deliberately keeps the first hardware runtime small and synchronous:
+This module deliberately keeps the first hardware runtime small and bounded:
 only the experts selected by the router are read, staging memory is preallocated,
-and every cache slot has a fixed allocation.  It is an inference prototype, not a
-training implementation.
+and every cache slot has a fixed allocation.  Synchronous execution remains the
+default; async and adaptive paths are opt-in experiments.  It is an inference
+prototype, not a training implementation.
 """
 
 from __future__ import annotations
@@ -407,6 +408,10 @@ class PagedRuntimeMetrics:
     staging_waits: int = 0
     storage_queue_seconds: float = 0.0
     demand_wait_seconds: float = 0.0
+    adaptive_async_forwards: int = 0
+    adaptive_sync_forwards: int = 0
+    adaptive_async_experts: int = 0
+    adaptive_sync_experts: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -435,6 +440,10 @@ class _MutableMetrics:
     staging_waits: int = 0
     storage_queue_seconds: float = 0.0
     demand_wait_seconds: float = 0.0
+    adaptive_async_forwards: int = 0
+    adaptive_sync_forwards: int = 0
+    adaptive_async_experts: int = 0
+    adaptive_sync_experts: int = 0
 
     def snapshot(self) -> PagedRuntimeMetrics:
         return PagedRuntimeMetrics(
@@ -458,6 +467,10 @@ class _MutableMetrics:
             staging_waits=self.staging_waits,
             storage_queue_seconds=self.storage_queue_seconds,
             demand_wait_seconds=self.demand_wait_seconds,
+            adaptive_async_forwards=self.adaptive_async_forwards,
+            adaptive_sync_forwards=self.adaptive_sync_forwards,
+            adaptive_async_experts=self.adaptive_async_experts,
+            adaptive_sync_experts=self.adaptive_sync_experts,
         )
 
 
@@ -526,8 +539,8 @@ class ExpertSlotCache:
             raise ValueError("capacity must be positive")
         if staging_slots <= 0:
             raise ValueError("staging_slots must be positive")
-        if pipeline_mode not in ("sync", "async"):
-            raise ValueError("pipeline_mode must be 'sync' or 'async'")
+        if pipeline_mode not in ("sync", "async", "adaptive"):
+            raise ValueError("pipeline_mode must be 'sync', 'async', or 'adaptive'")
         self.store = store
         self.capacity_per_layer = capacity_per_layer
         if capacity_per_layer is None:
@@ -618,11 +631,11 @@ class ExpertSlotCache:
         self.staging_slots = staging_slots
         self.pipeline_mode = pipeline_mode
         if (
-            self.pipeline_mode == "async"
+            self._uses_async_infrastructure
             and self.device.type == "cuda"
             and not self.pin_staging
         ):
-            raise ValueError("the CUDA async pipeline requires pinned staging")
+            raise ValueError("the CUDA async-capable pipeline requires pinned staging")
         self._staging_gate_up = torch.empty(
             (staging_slots, *spec.gate_up_shape),
             dtype=spec.dtype,
@@ -660,10 +673,14 @@ class ExpertSlotCache:
         self._close_lock = threading.Lock()
         self._transfer_stream: Any | None = None
         self._pipeline_error: BaseException | None = None
-        if self.pipeline_mode == "async":
+        if self._uses_async_infrastructure:
             self._jobs = queue.Queue(maxsize=staging_slots)
             if self.device.type == "cuda":
                 self._transfer_stream = torch.cuda.Stream(device=self.device)
+
+    @property
+    def _uses_async_infrastructure(self) -> bool:
+        return self.pipeline_mode in ("async", "adaptive")
 
     @property
     def allocated_cache_bytes(self) -> int:
@@ -682,7 +699,7 @@ class ExpertSlotCache:
         self.close()
 
     def _ensure_worker(self) -> None:
-        if self.pipeline_mode != "async":
+        if not self._uses_async_infrastructure:
             return
         with self._condition:
             if not self._accepting or self._closed:
@@ -803,6 +820,8 @@ class ExpertSlotCache:
 
     def submit(self, key: ExpertKey) -> ExpertLoadTicket:
         """Submit one bounded, coalesced storage load in async mode."""
+        if self.pipeline_mode != "async":
+            raise RuntimeError("submit requires pipeline_mode='async'")
         with self.execution_lock:
             return self._submit_locked(key, account_request=True)
 
@@ -817,8 +836,8 @@ class ExpertSlotCache:
         *,
         account_request: bool,
     ) -> ExpertLoadTicket:
-        if self.pipeline_mode != "async":
-            raise RuntimeError("submit requires pipeline_mode='async'")
+        if not self._uses_async_infrastructure:
+            raise RuntimeError("submit requires an async-capable pipeline mode")
         if key not in self.store:
             raise KeyError(f"unknown expert: {key.compact()}")
         self._ensure_worker()
@@ -956,6 +975,39 @@ class ExpertSlotCache:
     def resident_keys(self) -> tuple[ExpertKey, ...]:
         with self._lock:
             return tuple(sorted(self._key_to_slot))
+
+    def _adaptive_should_use_async(
+        self,
+        layer: int,
+        expert_ids: Iterable[int],
+    ) -> bool:
+        """Select async for a call that starts with free slots and misses.
+
+        The first conservative selector deliberately avoids async eviction
+        scheduling for calls that start with a full eligible layer partition.
+        The RTX 6000 Ada study found that empty-cache passes usually benefited
+        from async, while retained-cache and longer runs could regress.
+        """
+        keys = tuple(ExpertKey(layer, int(expert_id)) for expert_id in expert_ids)
+        with self._condition:
+            if self.staging_slots < 2:
+                return False
+            missing = tuple(key for key in keys if key not in self._key_to_slot)
+            if len(missing) < 2:
+                return False
+            candidate_slots = {
+                slot for key in missing for slot in self._async_candidate_slots(key)
+            }
+            return any(self._slot_to_key[slot] is None for slot in candidate_slots)
+
+    def _record_adaptive_decision(self, use_async: bool, experts: int) -> None:
+        with self._condition:
+            if use_async:
+                self._metrics.adaptive_async_forwards += 1
+                self._metrics.adaptive_async_experts += experts
+            else:
+                self._metrics.adaptive_sync_forwards += 1
+                self._metrics.adaptive_sync_experts += experts
 
     def _select_lru_slot(self, slots: tuple[int, ...]) -> int:
         empty = [slot for slot in slots if self._slot_to_key[slot] is None]
@@ -1103,7 +1155,7 @@ class ExpertSlotCache:
             self._condition.notify_all()
 
     def _poll_transfer_completions(self) -> None:
-        if self.pipeline_mode != "async" or self.device.type != "cuda":
+        if not self._uses_async_infrastructure or self.device.type != "cuda":
             return
         with self._condition:
             inflight = tuple(
@@ -1407,7 +1459,7 @@ class ExpertSlotCache:
 
     def wait_idle(self) -> None:
         """Drain submitted async work without closing the external store."""
-        if self.pipeline_mode != "async":
+        if not self._uses_async_infrastructure:
             return
         first_error: Exception | None = None
         with self.execution_lock:
@@ -1554,10 +1606,17 @@ class PagedExpertRuntime:
             if hidden_states.device.type == "cuda"
             else None
         )
+        use_async = self.cache.pipeline_mode == "async"
+        if self.cache.pipeline_mode == "adaptive" and expert_ids:
+            # A previous external submission must not share staging with the
+            # synchronous branch selected for this forward.
+            self.cache.wait_idle()
+            use_async = self.cache._adaptive_should_use_async(layer, expert_ids)
+            self.cache._record_adaptive_decision(use_async, len(expert_ids))
         tickets: dict[int, ExpertLoadTicket] = {}
         next_to_submit = 0
         try:
-            if self.cache.pipeline_mode == "async":
+            if use_async:
                 initial_depth = min(self.cache.staging_slots, len(expert_ids))
                 while next_to_submit < initial_depth:
                     expert_id = expert_ids[next_to_submit]
@@ -1567,7 +1626,7 @@ class PagedExpertRuntime:
                     next_to_submit += 1
             for expert_id in expert_ids:
                 lease: _ExpertLease | None = None
-                if self.cache.pipeline_mode == "async":
+                if use_async:
                     lease = self.cache._acquire_ticket(
                         tickets[expert_id],
                         compute_stream=compute_stream,
@@ -1578,9 +1637,7 @@ class PagedExpertRuntime:
                 else:
                     weights = self.cache.get(ExpertKey(layer, expert_id))
                 try:
-                    if self.cache.pipeline_mode == "async" and next_to_submit < len(
-                        expert_ids
-                    ):
+                    if use_async and next_to_submit < len(expert_ids):
                         next_expert = expert_ids[next_to_submit]
                         tickets[next_expert] = self.cache._submit_lookahead(
                             ExpertKey(layer, next_expert)
@@ -1601,7 +1658,7 @@ class PagedExpertRuntime:
                     if lease is not None:
                         lease.release_after(compute_stream)
         except Exception:
-            if self.cache.pipeline_mode == "async":
+            if use_async:
                 try:
                     self.cache.wait_idle()
                 except Exception as cleanup_error:  # noqa: BLE001
@@ -1610,7 +1667,7 @@ class PagedExpertRuntime:
                             self.cache._pipeline_error = cleanup_error
             raise
         if hidden_states.device.type == "cuda":
-            if self.cache.pipeline_mode == "async":
+            if use_async:
                 try:
                     compute_stream.synchronize()
                 except Exception as exc:

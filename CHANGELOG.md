@@ -35,13 +35,18 @@
   token-length and cache-capacity charts. It records both positive empty-cache
   results and retained-cache regressions instead of reducing the study to one
   headline number.
+- Added an experimental `adaptive` pipeline mode that uses bounded async fill
+  for routed-layer calls that start with free eligible slots and at least two
+  requested misses; calls starting with a full partition use sync. Per-forward
+  and per-expert decision counters make the rule auditable in benchmark JSON.
 - Added a deterministic study summarizer that recomputes pair gates, validates
   the exact experiment matrix and strips private execution paths, plus support
   for fully resident routing-capture models that do not expose an Accelerate
   `hf_device_map`.
 - This MVP does not establish physical NVMe overlap or a universal end-to-end
-  speedup: safetensors remains mmap/page-cache backed, and adaptive scheduling,
-  free-running generation, concurrency and profiler evidence remain open.
+  speedup: safetensors remains mmap/page-cache backed, and adaptive-policy
+  calibration, free-running generation, concurrency and profiler evidence
+  remain open.
 
 ## 0.3.0 — 2026-08-14
 

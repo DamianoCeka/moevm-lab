@@ -46,6 +46,10 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
   mmap/page-cache service and H2D with expert compute inside a routed layer.
   That mechanism alone is not evidence of physical NVMe overlap or speedup;
   the provisional paired measurement below is separate evidence.
+- A conservative experimental `adaptive` mode informed by the RTX 6000 Ada
+  study. At the start of each routed-layer call, it selects async only if an
+  eligible slot is free and at least two requested experts are missing; calls
+  that start with a full partition use the synchronous path.
 - A guarded full-model smoke harness that verifies generated tokens against a
   pinned CPU-offload reference before reporting memory and timing observations.
 
@@ -193,6 +197,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
   --pipeline async `
   --staging-slots 2
 ```
+
+The conservative selector is available with `--pipeline adaptive` and the
+same minimum of two staging slots. Its output records how many forwards and
+experts used each path. This is a testable first policy, not a claim that the
+break-even rule is optimal.
 
 See [Async expert pipeline](docs/ASYNC_PIPELINE.md) for lifecycle rules,
 measurement boundaries and current limitations.

@@ -75,8 +75,38 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
 smallest useful overlap configuration and the initial comparison point. The
 default remains `--pipeline sync`, for which one staging slot remains valid.
 
+The experimental conservative selector uses the same bounded machinery:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\benchmark_paged_olmoe.py `
+  --snapshot <pinned-local-snapshot> `
+  --output .\results\paged-adaptive.json `
+  --pipeline adaptive `
+  --staging-slots 2
+```
+
+At the start of each routed-layer call, `adaptive` selects async only when at
+least two active experts are not resident and at least one slot eligible for
+those experts is empty. A call that starts with a full partition drains any
+external pending work and executes synchronously. The decision is call-level:
+an async-selected call may still fill its last free slot and evict later in the
+same call. This conservative boundary follows the strongest signal in the RTX
+6000 Ada study without pretending to be a complete cost model. Benchmark
+metrics expose `adaptive_async_forwards`,
+`adaptive_sync_forwards`, `adaptive_async_experts`, and
+`adaptive_sync_experts` so every decision is auditable.
+
+This selector is intentionally simple. It does not yet use learned workload
+history, timing feedback, queue pressure, or a calibrated cost model.
+
 At the Python API level, `ExpertSlotCache(..., pipeline_mode="async")` selects
-the same path. CUDA async mode requires pinned staging memory.
+the fixed path and `pipeline_mode="adaptive"` selects the conservative rule.
+Both CUDA modes require pinned staging memory.
+
+Adaptive ticket scheduling is internal to `PagedExpertRuntime`. Public
+`ExpertSlotCache.submit()` and `resolve()` remain fixed-async APIs and are
+rejected in adaptive mode, preventing callers from mixing outstanding ticket
+ownership with a direct synchronous `get()`.
 
 CUDA async consumers must execute experts through `PagedExpertRuntime`. Direct
 calls to `ExpertSlotCache.get()` or `ExpertSlotCache.resolve()` are
@@ -156,9 +186,9 @@ comparisons but only 18/36 retained comparisons. Retained 32- and 64-token
 See the
 [sanitized study, chart and exact evidence boundary](../benchmarks/reference/paged-runtime-olmoe-runpod-rtx6000ada-study/README.md).
 This supports further pipeline work but also shows that always-on async is not
-yet the right policy. The mode remains opt-in while an adaptive decision rule
-and common CUDA-timeline evidence are developed. Neither study is a production
-speedup claim.
+the right default. A conservative fill-aware adaptive rule is now implemented,
+but it still needs full-model comparison against both fixed modes and common
+CUDA-timeline evidence. Neither study is a production speedup claim.
 
 Compare sync and async with the same checkpoint revision, prompts, token limits,
 cache policy, GPU-slot capacity and exact generated or teacher-forced token

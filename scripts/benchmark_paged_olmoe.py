@@ -50,6 +50,10 @@ _PIPELINE_INTEGER_METRICS = (
     "storage_failures",
     "transfer_failures",
     "staging_waits",
+    "adaptive_async_forwards",
+    "adaptive_sync_forwards",
+    "adaptive_async_experts",
+    "adaptive_sync_experts",
 )
 _PIPELINE_HIGH_WATER_METRICS = (
     "pending_loads_peak",
@@ -110,11 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy", choices=("lru", "hybrid"), default="lru")
     parser.add_argument(
         "--pipeline",
-        choices=("sync", "async"),
+        choices=("sync", "async", "adaptive"),
         default="sync",
         help=(
             "Expert data path. Async uses one bounded storage worker and a "
-            "dedicated CUDA H2D stream; sync preserves the v0.3.0 behavior."
+            "dedicated CUDA H2D stream; adaptive uses it for routed-layer "
+            "calls that start with free slots and multiple misses; sync "
+            "preserves the v0.3.0 behavior."
         ),
     )
     parser.add_argument(
@@ -174,8 +180,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--hotset-json is only valid with --policy hybrid")
     if args.teacher_force_reference and not args.reference_metadata:
         raise ValueError("--teacher-force-reference requires --reference-metadata")
-    if args.pipeline == "async" and args.staging_slots < 2:
-        raise ValueError("async pipeline requires at least two staging slots")
+    if args.pipeline in ("async", "adaptive") and args.staging_slots < 2:
+        raise ValueError("async-capable pipeline requires at least two staging slots")
     output_path = Path(args.output).expanduser()
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite output: {output_path}")
@@ -1234,7 +1240,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         (
                             "The Python runtime is synchronous and does not overlap storage, H2D, or compute."
                             if args.pipeline == "sync"
-                            else "The bounded async path is designed to permit mmap/page-cache service and pinned H2D to progress alongside expert compute inside a routed layer; this run does not itself measure interval overlap or prove physical NVMe activity."
+                            else (
+                                "The bounded async path is designed to permit mmap/page-cache service and pinned H2D to progress alongside expert compute inside a routed layer; this run does not itself measure interval overlap or prove physical NVMe activity."
+                                if args.pipeline == "async"
+                                else "The conservative adaptive path selects async only for routed-layer calls that start with a free eligible slot and at least two requested misses; calls starting full use sync. This rule is experimental and not a performance guarantee."
+                            )
                         ),
                         "One prompt and at most a few greedy tokens cannot establish production performance.",
                         "Prefill groups unique active experts per layer; its lookups are not a tokenwise trace replay.",

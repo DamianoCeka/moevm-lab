@@ -313,6 +313,111 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertLessEqual(metrics.peak_staging_in_use, 2)
         self.assertEqual(cache._stage_state, ["free", "free"])
 
+    def test_adaptive_fills_empty_partition_async_then_uses_sync(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="adaptive",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        generator = torch.Generator().manual_seed(1508)
+
+        first_hidden = torch.randn(3, self.hidden_size, generator=generator)
+        first_index = torch.tensor([[0], [1], [2]], dtype=torch.long)
+        first_weights = torch.ones(3, 1)
+        first = runtime.forward(0, first_hidden, first_index, first_weights)
+        torch.testing.assert_close(
+            first,
+            self._reference_forward(first_hidden, first_index, first_weights),
+        )
+
+        second_hidden = torch.randn(2, self.hidden_size, generator=generator)
+        second_index = torch.tensor([[1], [2]], dtype=torch.long)
+        second_weights = torch.ones(2, 1)
+        second = runtime.forward(0, second_hidden, second_index, second_weights)
+        torch.testing.assert_close(
+            second,
+            self._reference_forward(second_hidden, second_index, second_weights),
+        )
+
+        metrics = cache.metrics()
+        self.assertEqual(metrics.adaptive_async_forwards, 1)
+        self.assertEqual(metrics.adaptive_sync_forwards, 1)
+        self.assertEqual(metrics.adaptive_async_experts, 3)
+        self.assertEqual(metrics.adaptive_sync_experts, 2)
+        self.assertEqual((metrics.requests, metrics.hits, metrics.misses), (5, 2, 3))
+        self.assertEqual(cache._stage_state, ["free", "free"])
+
+    def test_adaptive_uses_sync_for_only_one_missing_expert(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="adaptive",
+        )
+        self.addCleanup(cache.close)
+        cache.get(ExpertKey(0, 0))
+        hidden_states = torch.ones(2, self.hidden_size)
+        top_k_index = torch.tensor([[0], [1]], dtype=torch.long)
+        top_k_weights = torch.ones(2, 1)
+
+        actual = PagedExpertRuntime(cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        torch.testing.assert_close(
+            actual,
+            self._reference_forward(hidden_states, top_k_index, top_k_weights),
+        )
+        metrics = cache.metrics()
+        self.assertEqual(metrics.adaptive_async_forwards, 0)
+        self.assertEqual(metrics.adaptive_sync_forwards, 1)
+        self.assertEqual(metrics.adaptive_sync_experts, 2)
+        self.assertIsNone(cache._worker)
+
+    def test_adaptive_single_staging_slot_remains_synchronous(self) -> None:
+        cache = self._cache(2, pipeline_mode="adaptive")
+        self.addCleanup(cache.close)
+        hidden_states = torch.ones(3, self.hidden_size)
+        top_k_index = torch.tensor([[0], [1], [2]], dtype=torch.long)
+        top_k_weights = torch.ones(3, 1)
+
+        actual = PagedExpertRuntime(cache).forward(
+            0,
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+
+        torch.testing.assert_close(
+            actual,
+            self._reference_forward(hidden_states, top_k_index, top_k_weights),
+        )
+        metrics = cache.metrics()
+        self.assertEqual(metrics.adaptive_async_forwards, 0)
+        self.assertEqual(metrics.adaptive_sync_forwards, 1)
+        self.assertIsNone(cache._worker)
+
+    def test_adaptive_rejects_public_async_ticket_api(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            pipeline_mode="adaptive",
+        )
+        self.addCleanup(cache.close)
+
+        with self.assertRaisesRegex(RuntimeError, "pipeline_mode='async'"):
+            cache.submit(ExpertKey(0, 0))
+
+        loaded = cache.get(ExpertKey(0, 0))
+        gate, up, down = self.original[ExpertKey(0, 0)]
+        torch.testing.assert_close(loaded.gate_up, torch.cat((gate, up)))
+        torch.testing.assert_close(loaded.down, down)
+        self.assertIsNone(cache._worker)
+
     def test_async_lookahead_matches_sync_demand_and_lru_accounting(self) -> None:
         sync_cache = self._cache(2)
         async_cache = self._cache(
@@ -1099,6 +1204,68 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertTrue(any(event is not None for event in cache._slot_last_use_event))
         with self.assertRaisesRegex(RuntimeError, "raw CUDA weights are unsafe"):
             cache.get(ExpertKey(0, 0))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_adaptive_cuda_switches_from_async_fill_to_sync_hit(self) -> None:
+        device = "cuda"
+        generator = torch.Generator().manual_seed(1509)
+        hidden_states = torch.randn(3, self.hidden_size, generator=generator).to(device)
+        top_k_index = torch.tensor([[0], [1], [2]], device=device)
+        top_k_weights = torch.ones(3, 1, device=device)
+        cache = self._cache(
+            2,
+            device=device,
+            staging_slots=2,
+            pipeline_mode="adaptive",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        torch.cuda.current_stream().synchronize()
+        original_synchronize = torch.cuda.synchronize
+
+        def reject_global_synchronize(*_args, **_kwargs):
+            raise AssertionError("adaptive async fill used a global CUDA synchronize")
+
+        torch.cuda.synchronize = reject_global_synchronize
+        try:
+            actual = runtime.forward(
+                0,
+                hidden_states,
+                top_k_index,
+                top_k_weights,
+            )
+        finally:
+            torch.cuda.synchronize = original_synchronize
+
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        hit_index = torch.tensor([[1], [2]], device=device)
+        hit_weights = torch.ones(2, 1, device=device)
+        hit_output = runtime.forward(
+            0,
+            hidden_states[:2],
+            hit_index,
+            hit_weights,
+        )
+        torch.testing.assert_close(
+            hit_output,
+            self._reference_forward(hidden_states[:2], hit_index, hit_weights),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        metrics = cache.metrics()
+        self.assertEqual(metrics.adaptive_async_forwards, 1)
+        self.assertEqual(metrics.adaptive_sync_forwards, 1)
+        self.assertEqual(metrics.adaptive_async_experts, 3)
+        self.assertEqual(metrics.adaptive_sync_experts, 2)
+        self.assertEqual((metrics.requests, metrics.hits, metrics.misses), (5, 2, 3))
 
 
 if __name__ == "__main__":
