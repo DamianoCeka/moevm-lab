@@ -31,9 +31,17 @@
   output, cache-policy counters and transfer traffic before reporting timings.
 - Added sanitized three-pair async smoke evidence and a deterministic SVG that
   shows every paired wall-time observation and its narrow evidence boundary.
-- This MVP does not establish physical NVMe overlap or an end-to-end speedup:
-  safetensors remains mmap/page-cache backed, and longer multi-workload plus
-  profiler evidence is still required for a general performance claim.
+- Added a sanitized 36-pair RTX 6000 Ada study with deterministic workload,
+  token-length and cache-capacity charts. It records both positive empty-cache
+  results and retained-cache regressions instead of reducing the study to one
+  headline number.
+- Added a deterministic study summarizer that recomputes pair gates, validates
+  the exact experiment matrix and strips private execution paths, plus support
+  for fully resident routing-capture models that do not expose an Accelerate
+  `hf_device_map`.
+- This MVP does not establish physical NVMe overlap or a universal end-to-end
+  speedup: safetensors remains mmap/page-cache backed, and adaptive scheduling,
+  free-running generation, concurrency and profiler evidence remain open.
 
 ## 0.3.0 — 2026-08-14
 

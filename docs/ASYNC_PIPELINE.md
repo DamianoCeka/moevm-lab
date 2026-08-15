@@ -145,8 +145,19 @@ IDs and per-scope logical cache/transfer counters; peak allocated VRAM was also
 observed equal in these runs. See the
 [visual comparison and sanitized evidence](../benchmarks/reference/paged-runtime-olmoe-p310-async-smoke/README.md).
 
-That result is provisional. It does not satisfy the longer multi-workload or
-common CUDA-timeline requirements below and therefore is not a production
+A 36-pair follow-up on one RTX 6000 Ada adds five workloads, 2/8/16/32/64-token
+conditions and LRU16/24/32/40 capacity points. All pair gates passed. In the
+five-workload 16-token core, the median per-repetition aggregate ratio was
+`1.208x` with an empty dynamic expert cache and `1.057x` on the immediate
+retained repeat. Across the full matrix, async was faster in 33/36 empty-cache
+comparisons but only 18/36 retained comparisons. Retained 32- and 64-token
+`python_code` runs regressed to median ratios of `0.853x` and `0.869x`.
+
+See the
+[sanitized study, chart and exact evidence boundary](../benchmarks/reference/paged-runtime-olmoe-runpod-rtx6000ada-study/README.md).
+This supports further pipeline work but also shows that always-on async is not
+yet the right policy. The mode remains opt-in while an adaptive decision rule
+and common CUDA-timeline evidence are developed. Neither study is a production
 speedup claim.
 
 Compare sync and async with the same checkpoint revision, prompts, token limits,
