@@ -490,6 +490,10 @@ class _CudaTimelineEventSpan:
 class _CudaTimelineTransferLedger:
     """One transfer a capture admitted before an I/O worker could see it."""
 
+    # Keep a strong reference while the capture is open.  The runtime creates
+    # short-lived ticket objects per layer, so an ``id(ticket)`` key alone can
+    # be reused by Python for a later expert before model-call capture closes.
+    ticket: Any
     key: ExpertKey
     state: str = "reserved"
     ready_event: Any | None = None
@@ -639,7 +643,10 @@ class _CudaTimelineCapture:
                     )
                     return False
                 return True
-            self._transfer_ledger[token] = _CudaTimelineTransferLedger(ticket.key)
+            self._transfer_ledger[token] = _CudaTimelineTransferLedger(
+                ticket=ticket,
+                key=ticket.key,
+            )
             return True
 
     def claim_transfer(self, ticket: ExpertLoadTicket) -> bool:

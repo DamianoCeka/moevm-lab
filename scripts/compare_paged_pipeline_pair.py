@@ -105,6 +105,30 @@ def _mapping(value: object, name: str) -> dict[str, Any]:
     return value
 
 
+def _telemetry_diagnostic_value(value: object, *, limit: int) -> str:
+    """Render untrusted capture diagnostics without dumping arbitrary payloads."""
+
+    if value is None:
+        return "null"
+    if not isinstance(value, str):
+        return f"<{type(value).__name__}>"
+    normalized = " ".join(value.split())
+    if len(normalized) > limit:
+        normalized = f"{normalized[: limit - 1]}…"
+    return repr(normalized)
+
+
+def _incomplete_timeline_detail(timeline: dict[str, Any]) -> str:
+    """Return the runtime's bounded incomplete-capture explanation."""
+
+    return (
+        " ("
+        f"status={_telemetry_diagnostic_value(timeline.get('status'), limit=64)}; "
+        f"reason={_telemetry_diagnostic_value(timeline.get('reason'), limit=240)}"
+        ")"
+    )
+
+
 def _integer(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
@@ -257,7 +281,9 @@ def _timeline_call(raw: object, name: str) -> dict[str, Any]:
     ):
         raise ValueError(f"{name}.schema_version must be 1")
     if timeline.get("complete") is not True:
-        raise ValueError(f"{name} must be complete")
+        raise ValueError(
+            f"{name} must be complete{_incomplete_timeline_detail(timeline)}"
+        )
     if timeline.get("method") != _CUDA_TIMELINE_METHOD:
         raise ValueError(f"{name}.method is invalid")
     if timeline.get("scope") != _CUDA_TIMELINE_SCOPE:

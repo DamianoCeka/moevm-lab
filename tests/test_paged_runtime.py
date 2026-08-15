@@ -303,6 +303,29 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertIn("cancelled", str(result["reason"]))
         self.assertEqual(result["spans"], [])
 
+    def test_cuda_timeline_ledger_retains_each_reserved_ticket_identity(self) -> None:
+        """Layer-local tickets cannot have their object id reused mid-capture."""
+
+        capture = _CudaTimelineCapture(torch.device("cuda"))
+        capture._state = capture._ACTIVE
+        first = ExpertLoadTicket(
+            key=ExpertKey(0, 0),
+            queued_at=time.perf_counter(),
+            request_clock=0,
+        )
+        second = ExpertLoadTicket(
+            key=ExpertKey(1, 0),
+            queued_at=time.perf_counter(),
+            request_clock=0,
+        )
+
+        self.assertTrue(capture.reserve_transfer(first))
+        self.assertTrue(capture.reserve_transfer(second))
+
+        self.assertEqual(len(capture._transfer_ledger), 2)
+        self.assertIs(capture._transfer_ledger[id(first)].ticket, first)
+        self.assertIs(capture._transfer_ledger[id(second)].ticket, second)
+
     def test_shared_transfer_stream_submissions_do_not_interleave(self) -> None:
         """A worker and foreground H2D keep complete event pairs contiguous."""
 

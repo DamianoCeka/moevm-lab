@@ -500,6 +500,25 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     _HARNESS._aggregate_cuda_overlap([call])
 
+    def test_cuda_overlap_aggregation_surfaces_incomplete_capture_reason(self) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call.update(
+            {
+                "complete": False,
+                "status": "incomplete",
+                "reason": "an async H2D was cancelled before it could be measured",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "status='incomplete'.*cancelled before it could be measured",
+        ):
+            _HARNESS._aggregate_cuda_overlap([call])
+
     def test_cuda_overlap_aggregation_accepts_worker_compatible_span_metadata(
         self,
     ) -> None:

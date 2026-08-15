@@ -455,6 +455,26 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _COMPARATOR.compare_reports(sync, async_)
 
+    def test_requested_cuda_telemetry_surfaces_incomplete_capture_reason(self) -> None:
+        sync = self._with_cuda_telemetry(self._report("sync"))
+        async_ = self._with_cuda_telemetry(self._report("async"))
+        timeline = async_["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        timeline.update(
+            {
+                "complete": False,
+                "status": "incomplete",
+                "reason": "an async H2D was cancelled before it could be measured",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "status='incomplete'.*cancelled before it could be measured",
+        ):
+            _COMPARATOR.compare_reports(sync, async_)
+
     def test_requested_cuda_telemetry_accepts_complete_not_applicable_calls(
         self,
     ) -> None:
