@@ -405,6 +405,106 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertLessEqual(metrics.peak_staging_in_use, 2)
         self.assertEqual(cache._stage_state, ["free", "free"])
 
+    def test_async_wait_idle_discards_undemanded_lookahead_without_admission(
+        self,
+    ) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+
+        ticket = cache._submit_lookahead(key)
+        self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+        self.assertEqual(cache.resident_keys, ())
+        self.assertEqual(cache._key_to_slot, {})
+        self.assertEqual(cache._slot_to_key, [None])
+
+        cache.wait_idle()
+
+        self.assertEqual(ticket.state, "discarded")
+        self.assertEqual(cache.resident_keys, ())
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._stage_state, ["free"])
+        self.assertEqual(cache._slot_reservation, [None])
+        metrics = cache.metrics()
+        self.assertEqual((metrics.requests, metrics.hits, metrics.misses), (0, 0, 0))
+        self.assertEqual(metrics.evictions, 0)
+
+    def test_async_wait_idle_waits_for_worker_acknowledgement_of_queued_discard(
+        self,
+    ) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        worker_started = threading.Event()
+        release_worker = threading.Event()
+        self.addCleanup(release_worker.set)
+        original_worker = cache._io_worker
+
+        def blocked_worker() -> None:
+            worker_started.set()
+            if not release_worker.wait(timeout=2.0):
+                raise TimeoutError("test did not release the I/O worker")
+            original_worker()
+
+        cache._io_worker = blocked_worker
+        ticket = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(worker_started.wait(timeout=2.0))
+        errors: list[Exception] = []
+
+        def drain() -> None:
+            try:
+                cache.wait_idle()
+            except Exception as exc:  # noqa: BLE001 - asserted below
+                errors.append(exc)
+
+        drainer = threading.Thread(target=drain)
+        drainer.start()
+        deadline = time.monotonic() + 2.0
+        while not ticket.discard_requested and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertTrue(ticket.discard_requested)
+        self.assertTrue(drainer.is_alive())
+        self.assertIs(cache._pending_by_key[ticket.key], ticket)
+        self.assertEqual(cache._queued_job_count, 1)
+
+        release_worker.set()
+        drainer.join(timeout=2.0)
+        self.assertFalse(drainer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(ticket.state, "discarded")
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._queued_job_count, 0)
+
+    def test_async_cpu_lookahead_never_evicts_a_logical_resident(self) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        resident = ExpertKey(0, 0)
+        future = ExpertKey(0, 1)
+
+        cache.get(resident)
+        ticket = cache._submit_lookahead(future)
+        self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+
+        self.assertEqual(cache.resident_keys, (resident,))
+        self.assertIsNone(ticket.destination_slot)
+        self.assertEqual(cache._slot_reservation, [None])
+        self.assertEqual(cache.metrics().evictions, 0)
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (resident,))
+        self.assertEqual(cache.metrics().evictions, 0)
+
     def test_adaptive_fills_empty_partition_async_then_uses_sync(self) -> None:
         cache = self._cache(
             2,
@@ -739,6 +839,41 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(metrics.misses, 3)
         self.assertEqual(metrics.storage_bytes, 3 * self.store.spec.size_bytes)
         self.assertEqual(metrics.storage_loads, 3)
+
+    def test_async_stale_hit_promotes_a_concurrent_lookahead_to_demand(self) -> None:
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        zero = ExpertKey(0, 0)
+        one = ExpertKey(0, 1)
+        cache.get(zero)
+        stale_hit = cache.submit(zero)
+        self.assertTrue(stale_hit.counted_as_hit)
+        cache.get(one)
+
+        lookahead = cache._submit_lookahead(zero)
+        self.assertTrue(lookahead.storage_done.wait(timeout=2.0))
+        self.assertFalse(lookahead.demanded)
+        self.assertIs(cache._pending_by_key[zero], lookahead)
+
+        with cache.execution_lock:
+            refreshed = cache._refresh_stale_resident_ticket(stale_hit)
+            self.assertIs(refreshed, lookahead)
+            self.assertTrue(lookahead.demanded)
+            self.assertEqual(lookahead.request_clock, stale_hit.request_clock)
+            self.assertFalse(lookahead.discard_requested)
+            lease = cache._acquire_ticket(
+                refreshed,
+                compute_stream=None,
+                synchronize=True,
+            )
+            lease.release_after()
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (zero,))
 
     def test_async_stale_ticket_cannot_requeue_after_close(self) -> None:
         cache = self._cache(1, pipeline_mode="async")
@@ -1340,6 +1475,577 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertTrue(any(event is not None for event in cache._slot_last_use_event))
         with self.assertRaisesRegex(RuntimeError, "raw CUDA weights are unsafe"):
             cache.get(ExpertKey(0, 0))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_worker_h2d_reserves_only_until_demand(self) -> None:
+        device = "cuda"
+        cache = self._cache(
+            2,
+            device=device,
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+
+        ticket = cache._submit_lookahead(key)
+        self.assertTrue(ticket.transfer_enqueued.wait(timeout=2.0))
+        self.assertIsNone(ticket.error)
+        with cache._condition:
+            slot = ticket.destination_slot
+            self.assertIsNotNone(slot)
+            self.assertFalse(ticket.demanded)
+            self.assertTrue(ticket.reservation_active)
+            self.assertIs(cache._slot_reservation[slot], ticket)
+            self.assertIsNone(cache._slot_to_key[slot])
+            self.assertNotIn(key, cache._key_to_slot)
+            self.assertEqual(cache.metrics().evictions, 0)
+
+        torch.cuda.synchronize(device)
+        cache._poll_transfer_completions()
+        with cache._condition:
+            self.assertEqual(ticket.state, "prefetched")
+            self.assertTrue(ticket.reservation_active)
+            self.assertIs(cache._slot_reservation[slot], ticket)
+            self.assertEqual(cache._stage_state, ["free"])
+            self.assertIsNone(cache._slot_to_key[slot])
+            self.assertNotIn(key, cache._key_to_slot)
+
+        stream = torch.cuda.current_stream(device)
+        with cache.execution_lock:
+            lease = cache._acquire_ticket(
+                ticket,
+                compute_stream=stream,
+                synchronize=False,
+                account_demand=True,
+            )
+            self.assertEqual(cache._key_to_slot[key], slot)
+            self.assertEqual(cache._slot_to_key[slot], key)
+            stream.synchronize()
+            cache._poll_transfer_completions()
+            lease.release_after(stream)
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (key,))
+        self.assertEqual(cache._slot_reservation, [None, None])
+        self.assertEqual(cache._stage_state, ["free"])
+        metrics = cache.metrics()
+        self.assertEqual((metrics.requests, metrics.hits, metrics.misses), (1, 0, 1))
+        self.assertEqual(metrics.evictions, 0)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_prefetched_slot_is_not_available_to_another_demand(
+        self,
+    ) -> None:
+        cache = self._cache(
+            2,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        speculative = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(speculative.transfer_enqueued.wait(timeout=2.0))
+        torch.cuda.synchronize("cuda")
+        cache._poll_transfer_completions()
+        reserved_slot = speculative.destination_slot
+        self.assertIsNotNone(reserved_slot)
+        self.assertEqual(speculative.state, "prefetched")
+
+        with cache.execution_lock:
+            demanded = cache.submit(ExpertKey(0, 1))
+            lease = cache._acquire_ticket(
+                demanded,
+                compute_stream=None,
+                synchronize=True,
+            )
+            self.assertNotEqual(demanded.destination_slot, reserved_slot)
+            self.assertIs(cache._slot_reservation[reserved_slot], speculative)
+            self.assertIsNone(cache._slot_to_key[reserved_slot])
+            lease.release_after()
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (ExpertKey(0, 1),))
+        self.assertEqual(cache._slot_reservation, [None, None])
+        self.assertEqual(cache.metrics().evictions, 0)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_demand_reclaims_an_undemanded_prefetched_reservation(
+        self,
+    ) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        speculative = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(speculative.transfer_enqueued.wait(timeout=2.0))
+        torch.cuda.synchronize("cuda")
+        cache._poll_transfer_completions()
+        self.assertEqual(speculative.state, "prefetched")
+
+        demanded_key = ExpertKey(0, 1)
+        with cache.execution_lock:
+            demanded = cache.submit(demanded_key)
+            lease = cache._acquire_ticket(
+                demanded,
+                compute_stream=None,
+                synchronize=True,
+            )
+            lease.release_after()
+
+        cache.wait_idle()
+        self.assertEqual(speculative.state, "discarded")
+        self.assertEqual(cache.resident_keys, (demanded_key,))
+        self.assertEqual(cache._slot_reservation, [None])
+        self.assertEqual(cache.metrics().evictions, 0)
+
+        with cache.execution_lock:
+            reloaded = cache._acquire_ticket(
+                speculative,
+                compute_stream=None,
+                synchronize=True,
+                account_demand=True,
+            )
+            reloaded.release_after()
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (ExpertKey(0, 0),))
+        self.assertEqual((cache.metrics().requests, cache.metrics().misses), (2, 2))
+        self.assertEqual(cache.metrics().evictions, 1)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_speculative_h2d_failure_releases_reservation(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        original_enqueue = cache._enqueue_staging_to_slot
+
+        def fail_enqueue(*_args, **_kwargs):
+            raise RuntimeError("injected speculative H2D failure")
+
+        cache._enqueue_staging_to_slot = fail_enqueue
+        try:
+            ticket = cache._submit_lookahead(ExpertKey(0, 0))
+            self.assertTrue(ticket.completed.wait(timeout=2.0))
+            with self.assertRaisesRegex(RuntimeError, "injected speculative H2D"):
+                cache.wait_idle()
+        finally:
+            cache._enqueue_staging_to_slot = original_enqueue
+
+        self.assertEqual(cache.resident_keys, ())
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._slot_reservation, [None])
+        self.assertEqual(cache._slot_to_key, [None])
+        self.assertEqual(cache._stage_state, ["free"])
+        self.assertEqual(cache.metrics().transfer_failures, 1)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_poll_device_failure_releases_inflight_ticket(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        ticket = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(ticket.transfer_enqueued.wait(timeout=2.0))
+        original_set_device = torch.cuda.set_device
+
+        def fail_set_device(*_args, **_kwargs):
+            raise RuntimeError("injected CUDA device-selection failure")
+
+        torch.cuda.set_device = fail_set_device
+        try:
+            cache._poll_transfer_completions()
+        finally:
+            torch.cuda.set_device = original_set_device
+
+        self.assertTrue(ticket.completed.is_set())
+        self.assertEqual(ticket.state, "failed")
+        self.assertIsNotNone(ticket.error)
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._slot_reservation, [None])
+        self.assertEqual(cache._slot_to_key, [None])
+        self.assertEqual(cache._stage_state, ["free"])
+        with self.assertRaisesRegex(RuntimeError, "device-selection failure"):
+            cache.wait_idle()
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_poll_failure_quarantines_a_pinned_lease(self) -> None:
+        """A polling failure must not recycle weights still queued for compute."""
+
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+        next_key = ExpertKey(0, 1)
+        ticket = cache.submit(key)
+        self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+        stream = torch.cuda.Stream(device="cuda")
+        with cache.execution_lock:
+            lease = cache._acquire_ticket(
+                ticket,
+                compute_stream=stream,
+                synchronize=False,
+            )
+        with torch.cuda.stream(stream):
+            # Queue work after the lease's ready-event wait.  The release
+            # event below therefore represents a non-default compute tail.
+            if hasattr(torch.cuda, "_sleep"):
+                torch.cuda._sleep(100_000_000)
+            else:  # pragma: no cover - CUDA builds normally expose _sleep
+                torch.empty((1024, 1024), device="cuda").fill_(1)
+        slot = ticket.destination_slot
+        self.assertIsNotNone(slot)
+        self.assertEqual(cache._slot_pin_count[slot], 1)
+
+        original_set_device = torch.cuda.set_device
+
+        def fail_set_device(*_args, **_kwargs):
+            raise RuntimeError("injected CUDA device-selection failure")
+
+        torch.cuda.set_device = fail_set_device
+        try:
+            cache._poll_transfer_completions()
+        finally:
+            torch.cuda.set_device = original_set_device
+
+        with cache._condition:
+            self.assertEqual(ticket.state, "failed")
+            self.assertEqual(cache._slot_pin_count[slot], 1)
+            self.assertTrue(cache._slot_quarantined[slot])
+            self.assertIsNone(cache._slot_to_key[slot])
+            self.assertNotIn(key, cache._key_to_slot)
+            # Both allocators must reject the slot until the outstanding
+            # compute lease records its tail event and releases it.
+            self.assertIsNone(cache._select_async_slot_locked(next_key))
+            self.assertIsNone(cache._select_proactive_slot_locked(next_key))
+
+        with cache.execution_lock:
+            lease.release_after(stream)
+
+        with cache._condition:
+            self.assertEqual(cache._slot_pin_count[slot], 0)
+            self.assertFalse(cache._slot_quarantined[slot])
+            self.assertEqual(cache._select_async_slot_locked(next_key), slot)
+
+        tail_event = cache._slot_last_use_event[slot]
+        self.assertIsNotNone(tail_event)
+        # A real CUDA device-selection failure is terminal.  Reset only the
+        # test fixture's error latch to exercise the allocator's ordering
+        # guarantee after recovery; production never treats this as success.
+        with cache._condition:
+            cache._pipeline_error = None
+            cache._unobserved_errors.clear()
+
+        next_ticket = cache.submit(next_key)
+        self.assertTrue(next_ticket.storage_done.wait(timeout=2.0))
+        observed_wait_events: list[object] = []
+        original_enqueue = cache._enqueue_staging_to_slot
+
+        def capture_wait_events(*args, **kwargs):
+            wait_events = kwargs.get("wait_events")
+            if wait_events is None:
+                wait_events = args[3]
+            observed_wait_events.extend(wait_events)
+            return original_enqueue(*args, **kwargs)
+
+        cache._enqueue_staging_to_slot = capture_wait_events
+        try:
+            with cache.execution_lock:
+                next_lease = cache._acquire_ticket(
+                    next_ticket,
+                    compute_stream=torch.cuda.current_stream("cuda"),
+                    synchronize=False,
+                )
+                next_lease.release_after(torch.cuda.current_stream("cuda"))
+        finally:
+            cache._enqueue_staging_to_slot = original_enqueue
+
+        self.assertEqual(next_ticket.destination_slot, slot)
+        self.assertIn(tail_event, observed_wait_events)
+        cache.wait_idle()
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_sync_cuda_empty_slot_waits_for_failed_lease_tail(self) -> None:
+        """A sync-mode copy waits even when failure removed the logical key."""
+
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+        next_key = ExpertKey(0, 1)
+        ticket = cache.submit(key)
+        self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+        stream = torch.cuda.Stream(device="cuda")
+        with cache.execution_lock:
+            lease = cache._acquire_ticket(
+                ticket,
+                compute_stream=stream,
+                synchronize=False,
+            )
+        with torch.cuda.stream(stream):
+            if hasattr(torch.cuda, "_sleep"):
+                torch.cuda._sleep(100_000_000)
+            else:  # pragma: no cover - CUDA builds normally expose _sleep
+                torch.empty((1024, 1024), device="cuda").fill_(1)
+        slot = ticket.destination_slot
+        self.assertIsNotNone(slot)
+
+        original_set_device = torch.cuda.set_device
+
+        def fail_set_device(*_args, **_kwargs):
+            raise RuntimeError("injected CUDA device-selection failure")
+
+        torch.cuda.set_device = fail_set_device
+        try:
+            cache._poll_transfer_completions()
+        finally:
+            torch.cuda.set_device = original_set_device
+
+        lease.release_after(stream)
+        tail_event = cache._slot_last_use_event[slot]
+        self.assertIsNotNone(tail_event)
+        with cache._condition:
+            self.assertFalse(cache._slot_quarantined[slot])
+            cache._pipeline_error = None
+            cache._unobserved_errors.clear()
+
+        # This mirrors a recovered/drained mode switch.  `get()` must perform
+        # its pre-copy synchronization even though the failed slot is empty in
+        # the logical maps.
+        cache.set_pipeline_mode("sync")
+        synchronized_before_copy = False
+        original_synchronize = cache._synchronize_device
+        original_copy = cache._copy_staging_to_slot
+
+        def track_synchronize() -> None:
+            nonlocal synchronized_before_copy
+            synchronized_before_copy = True
+            original_synchronize()
+
+        def assert_safe_copy(*args, **kwargs):
+            self.assertTrue(synchronized_before_copy)
+            self.assertTrue(tail_event.query())
+            return original_copy(*args, **kwargs)
+
+        cache._synchronize_device = track_synchronize
+        cache._copy_staging_to_slot = assert_safe_copy
+        try:
+            cache.get(next_key)
+        finally:
+            cache._synchronize_device = original_synchronize
+            cache._copy_staging_to_slot = original_copy
+
+        self.assertEqual(cache.resident_keys, (next_key,))
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_poll_device_failure_drains_ready_demand_ticket(self) -> None:
+        cache = self._cache(
+            2,
+            device="cuda",
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        inflight = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(inflight.transfer_enqueued.wait(timeout=2.0))
+        ready_demand = cache.submit(ExpertKey(0, 1))
+        self.assertTrue(ready_demand.storage_done.wait(timeout=2.0))
+        self.assertEqual(ready_demand.state, "ready")
+        original_set_device = torch.cuda.set_device
+
+        def fail_set_device(*_args, **_kwargs):
+            raise RuntimeError("injected CUDA device-selection failure")
+
+        torch.cuda.set_device = fail_set_device
+        try:
+            cache._poll_transfer_completions()
+        finally:
+            torch.cuda.set_device = original_set_device
+
+        with self.assertRaisesRegex(RuntimeError, "device-selection failure"):
+            cache.wait_idle()
+        self.assertEqual(inflight.state, "failed")
+        self.assertEqual(ready_demand.state, "failed")
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._slot_reservation, [None, None])
+        self.assertEqual(cache._slot_to_key, [None, None])
+        self.assertEqual(cache._stage_state, ["free", "free"])
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_demand_waits_for_worker_to_publish_h2d_event(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        original_enqueue = cache._enqueue_staging_to_slot
+        enqueue_entered = threading.Event()
+        allow_enqueue = threading.Event()
+        self.addCleanup(allow_enqueue.set)
+        errors: list[Exception] = []
+
+        def delayed_enqueue(*args, **kwargs):
+            enqueue_entered.set()
+            if not allow_enqueue.wait(timeout=2.0):
+                raise TimeoutError("test did not release speculative H2D enqueue")
+            return original_enqueue(*args, **kwargs)
+
+        cache._enqueue_staging_to_slot = delayed_enqueue
+        try:
+            ticket = cache._submit_lookahead(ExpertKey(0, 0))
+            self.assertTrue(enqueue_entered.wait(timeout=2.0))
+
+            def demand_ticket() -> None:
+                try:
+                    with cache.execution_lock:
+                        lease = cache._acquire_ticket(
+                            ticket,
+                            compute_stream=None,
+                            synchronize=True,
+                            account_demand=True,
+                        )
+                        lease.release_after()
+                except Exception as exc:  # noqa: BLE001 - asserted below
+                    errors.append(exc)
+
+            demander = threading.Thread(target=demand_ticket)
+            demander.start()
+            deadline = time.monotonic() + 2.0
+            while not ticket.demanded and time.monotonic() < deadline:
+                time.sleep(0.001)
+            self.assertTrue(ticket.demanded)
+            self.assertFalse(ticket.transfer_enqueued.is_set())
+            self.assertTrue(demander.is_alive())
+
+            allow_enqueue.set()
+            demander.join(timeout=2.0)
+            self.assertFalse(demander.is_alive())
+        finally:
+            allow_enqueue.set()
+            cache._enqueue_staging_to_slot = original_enqueue
+
+        self.assertEqual(errors, [])
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (ExpertKey(0, 0),))
+        self.assertEqual(cache._stage_state, ["free"])
+        self.assertEqual(cache._slot_reservation, [None])
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_waiting_demand_observes_terminal_enqueue_failure(
+        self,
+    ) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        enqueue_entered = threading.Event()
+        allow_failure = threading.Event()
+        self.addCleanup(allow_failure.set)
+        errors: list[Exception] = []
+
+        def delayed_failure(*_args, **_kwargs):
+            enqueue_entered.set()
+            if not allow_failure.wait(timeout=2.0):
+                raise TimeoutError("test did not release speculative H2D failure")
+            raise RuntimeError("injected delayed speculative H2D failure")
+
+        original_enqueue = cache._enqueue_staging_to_slot
+        cache._enqueue_staging_to_slot = delayed_failure
+        try:
+            key = ExpertKey(0, 0)
+            ticket = cache._submit_lookahead(key)
+            self.assertTrue(enqueue_entered.wait(timeout=2.0))
+
+            def demand_ticket() -> None:
+                try:
+                    with cache.execution_lock:
+                        cache._acquire_ticket(
+                            ticket,
+                            compute_stream=None,
+                            synchronize=True,
+                            account_demand=True,
+                        )
+                except Exception as exc:  # noqa: BLE001 - asserted below
+                    errors.append(exc)
+
+            demander = threading.Thread(target=demand_ticket)
+            demander.start()
+            deadline = time.monotonic() + 2.0
+            while not ticket.demanded and time.monotonic() < deadline:
+                time.sleep(0.001)
+            self.assertTrue(ticket.demanded)
+            self.assertFalse(ticket.transfer_enqueued.is_set())
+
+            allow_failure.set()
+            demander.join(timeout=2.0)
+            self.assertFalse(demander.is_alive())
+        finally:
+            allow_failure.set()
+            cache._enqueue_staging_to_slot = original_enqueue
+
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
+        self.assertIn("injected delayed speculative H2D", str(errors[0]))
+        self.assertTrue(ticket.transfer_enqueued.is_set())
+        self.assertIsNotNone(ticket.error)
+        self.assertEqual(cache.resident_keys, ())
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._slot_reservation, [None])
+        self.assertEqual(cache._slot_to_key, [None])
+        self.assertEqual(cache._stage_state, ["free"])
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

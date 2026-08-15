@@ -707,6 +707,15 @@ class ExpertLoadTicket:
     state: str = "queued"
     counted_as_hit: bool = False
     cuda_timeline: _CudaTimelineCapture | None = None
+    # Internal forward lookaheads may be copied into an otherwise empty device
+    # slot before the router reaches them.  A reservation is deliberately
+    # physical-only: it must never be published in the logical cache maps
+    # until the corresponding demand is accounted for.
+    is_lookahead: bool = False
+    demanded: bool = False
+    reservation_active: bool = False
+    discard_requested: bool = False
+    transfer_enqueued: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass(slots=True)
@@ -878,11 +887,25 @@ class ExpertSlotCache:
         self._slot_copying: list[bool] = [False] * self.capacity
         self._slot_pin_count: list[int] = [0] * self.capacity
         self._slot_last_use_event: list[Any | None] = [None] * self.capacity
+        # A failed H2D may be reported after a forward thread has already
+        # leased the destination slot and queued compute behind its ready
+        # event.  Such a slot cannot be returned to either allocator until the
+        # lease releases and gives us an ordering event for that compute.
+        self._slot_quarantined: list[bool] = [False] * self.capacity
+        # A physical-only reservation owns a device slot while an internal
+        # lookahead H2D is in flight or has completed ahead of demand.  It is
+        # intentionally distinct from _slot_to_key/_key_to_slot so that
+        # requests, misses, LRU timestamps, and evictions stay demand-driven.
+        self._slot_reservation: list[ExpertLoadTicket | None] = [None] * self.capacity
         self._stage_owner: list[ExpertLoadTicket | None] = [None] * staging_slots
         self._stage_state: list[str] = ["free"] * staging_slots
         self._pending_by_key: dict[ExpertKey, ExpertLoadTicket] = {}
         self._unobserved_errors: dict[int, Exception] = {}
         self._jobs: queue.Queue[ExpertLoadTicket | None] | None = None
+        # Tracks jobs accepted by the queue until the I/O worker acknowledges
+        # them with task_done().  `wait_idle()` includes it in its drain gate,
+        # so an abandoned queued lookahead cannot outlive a mode switch.
+        self._queued_job_count = 0
         self._worker: threading.Thread | None = None
         self._accepting = True
         self._closed = False
@@ -958,8 +981,8 @@ class ExpertSlotCache:
 
     def _claim_staging_slot(self, ticket: ExpertLoadTicket) -> int:
         waited = False
-        with self._condition:
-            while True:
+        while True:
+            with self._condition:
                 for stage_index, state in enumerate(self._stage_state):
                     if state == "free":
                         self._stage_state[stage_index] = "reading"
@@ -974,6 +997,12 @@ class ExpertSlotCache:
                 if not waited:
                     self._metrics.staging_waits += 1
                     waited = True
+            # The worker may be the only thread alive while an H2D owns every
+            # staging buffer.  Poll outside the condition so completed
+            # speculative copies release their buffers without a blocking
+            # dispatcher or a second worker thread.
+            self._poll_transfer_completions()
+            with self._condition:
                 self._condition.wait(timeout=0.005)
 
     def _free_staging_slot_locked(
@@ -987,6 +1016,155 @@ class ExpertSlotCache:
         self._stage_state[stage_index] = "free"
         self._condition.notify_all()
 
+    def _retire_undemanded_lookahead_locked(
+        self,
+        ticket: ExpertLoadTicket,
+        *,
+        worker_owns_job: bool = False,
+    ) -> bool:
+        """Discard completed speculative work without changing logical cache state.
+
+        A read-only lookahead may be abandoned at a drained boundary or while
+        closing.  Reads already in progress cannot be cancelled safely, and a
+        CUDA H2D must retain staging ownership until its completion event fires;
+        callers therefore retry after marking ``discard_requested``.  Returning
+        ``False`` means the worker or completion poll still owns that progress.
+        """
+
+        if not ticket.is_lookahead or ticket.demanded:
+            return False
+        ticket.discard_requested = True
+        if ticket.state == "prefetching":
+            return False
+        if ticket.state in ("queued", "reading") and not worker_owns_job:
+            # The worker may already have dequeued this ticket or may do so
+            # next.  Keep it pending until the owning worker acknowledges the
+            # cancellation, rather than letting a drained boundary return with
+            # unseen queue work still able to claim a staging slot.
+            return False
+        if ticket.state not in ("queued", "reading", "ready", "prefetched"):
+            return ticket.state == "discarded"
+
+        if ticket.state in ("queued", "reading", "ready"):
+            stage_index = ticket.stage_index
+            if stage_index is not None:
+                self._free_staging_slot_locked(stage_index, ticket)
+        elif ticket.state == "prefetched":
+            slot = ticket.destination_slot
+            if slot is None:  # pragma: no cover - reservation invariant
+                raise RuntimeError("prefetched lookahead has no reserved slot")
+            if self._slot_reservation[slot] is not ticket:
+                raise RuntimeError("prefetched lookahead lost its reservation")
+            if self._slot_pin_count[slot] != 0:
+                # Promotion normally clears the reservation before a lease is
+                # pinned.  Preserve that safety property even if a future
+                # transition temporarily exposes both states.
+                return False
+            # H2D completed before the ticket reached ``prefetched``.  Its
+            # staging slot has already been released, so this only returns an
+            # otherwise-empty device slot to the physical pool.
+            self._slot_reservation[slot] = None
+            self._slot_copying[slot] = False
+            self._last_used[slot] = 0
+            self._slot_last_use_event[slot] = None
+            ticket.reservation_active = False
+
+        if self._pending_by_key.get(ticket.key) is ticket:
+            del self._pending_by_key[ticket.key]
+        ticket.state = "discarded"
+        ticket.storage_done.set()
+        ticket.completed.set()
+        ticket.transfer_enqueued.set()
+        self._condition.notify_all()
+        return True
+
+    def _select_proactive_slot_locked(self, key: ExpertKey) -> int | None:
+        """Return an empty physical slot suitable for a speculative H2D.
+
+        This deliberately never chooses a resident victim.  A proactive copy
+        can consume idle capacity, but is not allowed to evict an expert before
+        the router actually asks for the lookahead key.
+        """
+
+        empty = tuple(
+            slot
+            for slot in self._async_candidate_slots(key)
+            if self._slot_to_key[slot] is None
+            and self._slot_reservation[slot] is None
+            and not self._slot_copying[slot]
+            and not self._slot_quarantined[slot]
+            and self._slot_pin_count[slot] == 0
+        )
+        return min(empty) if empty else None
+
+    def _schedule_proactive_lookahead_transfer(
+        self,
+        ticket: ExpertLoadTicket,
+    ) -> bool:
+        """Non-blockingly enqueue one physical-only H2D from the I/O worker.
+
+        CUDA timeline capture deliberately opts out for now.  Capture spans are
+        currently finalized by the forward thread, so allowing a worker to add
+        a speculative span after capture close could make a ``complete`` trace
+        incomplete.  The normal demand path continues to provide exact
+        telemetry until capture admission has its own lifecycle protocol.
+        """
+
+        if self.device.type != "cuda" or ticket.cuda_timeline is not None:
+            return False
+        with self._condition:
+            if (
+                not self._accepting
+                or self._closed
+                or not ticket.is_lookahead
+                or ticket.demanded
+                or ticket.discard_requested
+                or ticket.state != "ready"
+            ):
+                return False
+            stage_index = ticket.stage_index
+            if stage_index is None:  # pragma: no cover - storage invariant
+                raise RuntimeError("ready lookahead has no staging slot")
+            slot = self._select_proactive_slot_locked(ticket.key)
+            if slot is None:
+                return False
+            wait_events: list[Any] = []
+            last_use = self._slot_last_use_event[slot]
+            if last_use is not None:
+                wait_events.append(last_use)
+            self._slot_generation[slot] += 1
+            ticket.destination_slot = slot
+            ticket.destination_generation = self._slot_generation[slot]
+            ticket.reservation_active = True
+            ticket.transfer_enqueued.clear()
+            self._slot_reservation[slot] = ticket
+            self._slot_copying[slot] = True
+            self._stage_state[stage_index] = "h2d"
+            ticket.state = "prefetching"
+            staging_gate_up = self._staging_gate_up[stage_index]
+            staging_down = self._staging_down[stage_index]
+
+        try:
+            # CUDA device selection is thread-local.  The transfer stream is
+            # created by the cache owner but can safely be submitted from this
+            # persistent I/O worker once its device is selected here.
+            torch.cuda.set_device(self.device)
+            started_event, ready_event = self._enqueue_staging_to_slot(
+                slot,
+                staging_gate_up,
+                staging_down,
+                tuple(wait_events),
+            )
+            with self._condition:
+                ticket.transfer_started_event = started_event
+                ticket.ready_event = ready_event
+                ticket.transfer_enqueued.set()
+                self._condition.notify_all()
+            return True
+        except Exception as exc:  # noqa: BLE001 - CUDA worker boundary
+            self._fail_transfer(ticket, exc)
+            return False
+
     def _io_worker(self) -> None:
         jobs = self._jobs
         if jobs is None:  # pragma: no cover - constructor invariant
@@ -996,9 +1174,25 @@ class ExpertSlotCache:
             try:
                 if ticket is None:
                     return
+                with self._condition:
+                    if ticket.discard_requested and not ticket.demanded:
+                        self._retire_undemanded_lookahead_locked(
+                            ticket,
+                            worker_owns_job=True,
+                        )
+                        continue
                 stage_index = self._claim_staging_slot(ticket)
                 started = time.perf_counter()
                 with self._condition:
+                    # A cancellation can arrive while this worker waits for a
+                    # staging slot.  Re-check after ownership is established;
+                    # the worker, not wait_idle(), acknowledges that job.
+                    if ticket.discard_requested and not ticket.demanded:
+                        self._retire_undemanded_lookahead_locked(
+                            ticket,
+                            worker_owns_job=True,
+                        )
+                        continue
                     self._metrics.storage_queue_seconds += started - ticket.queued_at
                     ticket.state = "reading"
                 try:
@@ -1020,6 +1214,7 @@ class ExpertSlotCache:
                         self._free_staging_slot_locked(stage_index, ticket)
                         ticket.storage_done.set()
                         ticket.completed.set()
+                        ticket.transfer_enqueued.set()
                         self._condition.notify_all()
                     continue
 
@@ -1031,10 +1226,28 @@ class ExpertSlotCache:
                     self._metrics.storage_seconds += elapsed
                     self._metrics.storage_bytes += bytes_read
                     self._metrics.storage_loads += 1
+                    self._condition.notify_all()
+                    if ticket.discard_requested and not ticket.demanded:
+                        self._retire_undemanded_lookahead_locked(
+                            ticket,
+                            worker_owns_job=True,
+                        )
+                        continue
+
+                # Only internal lookaheads are eligible.  This call never
+                # waits for a slot and never evicts a logical resident.
+                self._schedule_proactive_lookahead_transfer(ticket)
+                with self._condition:
                     ticket.storage_done.set()
                     self._condition.notify_all()
             finally:
                 jobs.task_done()
+                if ticket is not None:
+                    with self._condition:
+                        self._queued_job_count -= 1
+                        if self._queued_job_count < 0:  # pragma: no cover
+                            raise RuntimeError("asynchronous job count underflow")
+                        self._condition.notify_all()
 
     def _new_resident_ticket_locked(
         self,
@@ -1051,6 +1264,7 @@ class ExpertSlotCache:
             destination_generation=self._slot_generation[slot],
             state="resident",
             counted_as_hit=account_request,
+            demanded=account_request,
         )
         ticket.storage_done.set()
         ticket.completed.set()
@@ -1113,8 +1327,10 @@ class ExpertSlotCache:
             if existing_ticket is not None:
                 if account_request:
                     existing_ticket.request_clock = self._clock
+                    existing_ticket.demanded = True
                     self._metrics.misses += 1
                     self._metrics.coalesced_requests += 1
+                    self._admit_proactive_reservation_locked(existing_ticket)
                 return existing_ticket
             if account_request:
                 self._metrics.misses += 1
@@ -1123,6 +1339,8 @@ class ExpertSlotCache:
                 queued_at=time.perf_counter(),
                 request_clock=self._clock if account_request else 0,
                 cuda_timeline=cuda_timeline,
+                is_lookahead=not account_request,
+                demanded=account_request,
             )
             self._pending_by_key[key] = ticket
             self._metrics.pending_loads_peak = max(
@@ -1142,6 +1360,8 @@ class ExpertSlotCache:
         jobs = self._jobs
         if jobs is None:  # pragma: no cover - constructor invariant
             raise RuntimeError("asynchronous job queue is unavailable")
+        with self._condition:
+            self._queued_job_count += 1
         try:
             jobs.put_nowait(ticket)
         except queue.Full as exc:
@@ -1149,6 +1369,7 @@ class ExpertSlotCache:
                 "asynchronous expert queue is full; resolve submitted work first"
             )
             with self._condition:
+                self._queued_job_count -= 1
                 if self._pending_by_key.get(ticket.key) is ticket:
                     del self._pending_by_key[ticket.key]
                 if rollback_request:
@@ -1183,6 +1404,8 @@ class ExpertSlotCache:
         self,
         ticket: ExpertLoadTicket,
     ) -> ExpertLoadTicket:
+        if ticket.state == "discarded":
+            return self._requeue_discarded_lookahead(ticket)
         if ticket.state != "resident":
             return ticket
         with self._condition:
@@ -1199,6 +1422,15 @@ class ExpertSlotCache:
                 self._metrics.misses += 1
                 ticket.counted_as_hit = False
             if pending is not None:
+                # This stale ticket already represents real demand (normally
+                # a submit-time hit that was evicted before acquisition).  A
+                # concurrent internal lookahead for the same key must inherit
+                # that demand before it is returned; otherwise reservation
+                # reclaim can mistake a lease-bound load for expendable work.
+                if ticket.demanded:
+                    pending.demanded = True
+                    pending.request_clock = ticket.request_clock
+                    self._admit_proactive_reservation_locked(pending)
                 self._metrics.coalesced_requests += 1
                 return pending
             ticket.queued_at = time.perf_counter()
@@ -1211,6 +1443,46 @@ class ExpertSlotCache:
             ticket.error = None
             ticket.ready_event = None
             ticket.transfer_started_event = None
+            ticket.transfer_enqueued.clear()
+            ticket.reservation_active = False
+            ticket.discard_requested = False
+            ticket.state = "queued"
+            self._pending_by_key[ticket.key] = ticket
+            self._metrics.pending_loads_peak = max(
+                self._metrics.pending_loads_peak,
+                len(self._pending_by_key),
+            )
+        self._enqueue_ticket(ticket)
+        return ticket
+
+    def _requeue_discarded_lookahead(
+        self,
+        ticket: ExpertLoadTicket,
+    ) -> ExpertLoadTicket:
+        """Turn a reclaimed internal lookahead into a fresh real-demand load."""
+
+        with self._condition:
+            if not ticket.demanded:  # pragma: no cover - caller invariant
+                raise RuntimeError("discarded lookahead must be demanded before reuse")
+            if self._closed or not self._accepting:
+                raise RuntimeError("expert slot cache is closed")
+            pending = self._pending_by_key.get(ticket.key)
+            if pending is not None and pending is not ticket:
+                self._metrics.coalesced_requests += 1
+                return pending
+            ticket.queued_at = time.perf_counter()
+            ticket.storage_done.clear()
+            ticket.completed.clear()
+            ticket.stage_index = None
+            ticket.destination_slot = None
+            ticket.destination_generation = 0
+            ticket.bytes_read = 0
+            ticket.error = None
+            ticket.ready_event = None
+            ticket.transfer_started_event = None
+            ticket.transfer_enqueued.clear()
+            ticket.reservation_active = False
+            ticket.discard_requested = False
             ticket.state = "queued"
             self._pending_by_key[ticket.key] = ticket
             self._metrics.pending_loads_peak = max(
@@ -1259,21 +1531,41 @@ class ExpertSlotCache:
                 self._metrics.adaptive_sync_experts += experts
 
     def _select_lru_slot(self, slots: tuple[int, ...]) -> int:
-        empty = [slot for slot in slots if self._slot_to_key[slot] is None]
+        reusable = [
+            slot
+            for slot in slots
+            if not self._slot_copying[slot]
+            and self._slot_pin_count[slot] == 0
+            and self._slot_reservation[slot] is None
+            and not self._slot_quarantined[slot]
+        ]
+        if not reusable:
+            raise RuntimeError("no safely reusable expert cache slot is available")
+        empty = [slot for slot in reusable if self._slot_to_key[slot] is None]
         if empty:
             return min(empty)
-        return min(slots, key=lambda slot: (self._last_used[slot], slot))
+        return min(reusable, key=lambda slot: (self._last_used[slot], slot))
 
     def _select_slot(self, key: ExpertKey) -> int:
         static_slot = self._static_slots.get(key)
         if static_slot is not None:
-            return static_slot
-        dynamic_slots = self._dynamic_slots_by_layer[key.layer]
-        if self.policy is CachePolicy.STATIC:
-            return dynamic_slots[0]
-        if self.policy is CachePolicy.HYBRID:
-            return self._select_lru_slot(dynamic_slots)
-        return self._select_lru_slot(self._layer_slots[key.layer])
+            slot = static_slot
+        else:
+            dynamic_slots = self._dynamic_slots_by_layer[key.layer]
+            if self.policy is CachePolicy.STATIC:
+                slot = dynamic_slots[0]
+            elif self.policy is CachePolicy.HYBRID:
+                slot = self._select_lru_slot(dynamic_slots)
+            else:
+                slot = self._select_lru_slot(self._layer_slots[key.layer])
+        if (
+            self._slot_copying[slot]
+            or self._slot_pin_count[slot] != 0
+            or self._slot_reservation[slot] is not None
+            or self._slot_quarantined[slot]
+        ):
+            raise RuntimeError("selected expert cache slot is not safely reusable")
+        return slot
 
     def _async_candidate_slots(self, key: ExpertKey) -> tuple[int, ...]:
         static_slot = self._static_slots.get(key)
@@ -1290,7 +1582,10 @@ class ExpertSlotCache:
         available = tuple(
             slot
             for slot in self._async_candidate_slots(key)
-            if not self._slot_copying[slot] and self._slot_pin_count[slot] == 0
+            if not self._slot_copying[slot]
+            and self._slot_pin_count[slot] == 0
+            and self._slot_reservation[slot] is None
+            and not self._slot_quarantined[slot]
         )
         if not available:
             return None
@@ -1299,18 +1594,30 @@ class ExpertSlotCache:
             return min(empty)
         return min(available, key=lambda slot: (self._last_used[slot], slot))
 
-    def _wait_for_async_slot(self, key: ExpertKey) -> int:
-        while True:
-            self._poll_transfer_completions()
-            with self._condition:
-                slot = self._select_async_slot_locked(key)
-                if slot is not None:
-                    return slot
-                if self._pipeline_error is not None:
-                    raise RuntimeError("asynchronous expert pipeline failed") from (
-                        self._pipeline_error
-                    )
-                self._condition.wait(timeout=0.002)
+    def _request_undemanded_reservation_reclaim_locked(self, key: ExpertKey) -> bool:
+        """Ask one physical-only reservation to make room for real demand.
+
+        A reservation is never an eviction target, but it must also not make a
+        public or future demand wait forever.  A completed speculative copy is
+        released immediately; an in-flight one is marked for release after its
+        CUDA event completes.  No logical cache entry is changed here.
+        """
+
+        for slot in self._async_candidate_slots(key):
+            reserved = self._slot_reservation[slot]
+            if reserved is None or not reserved.is_lookahead or reserved.demanded:
+                continue
+            # Demand promotion removes the reservation before creating a
+            # lease.  Keep this defensive gate as well: even a malformed or
+            # future state transition must never reclaim a buffer in use.
+            if self._slot_pin_count[slot] != 0:
+                continue
+            reserved.discard_requested = True
+            if reserved.state == "prefetched":
+                return self._retire_undemanded_lookahead_locked(reserved)
+            if reserved.state == "prefetching":
+                return True
+        return False
 
     def _synchronize_device(self) -> None:
         if self.device.type == "cuda":
@@ -1378,12 +1685,32 @@ class ExpertSlotCache:
         if self._slot_generation[slot] != ticket.destination_generation:
             raise RuntimeError("stale async transfer completion")
         self._slot_copying[slot] = False
-        self._slot_to_key[slot] = ticket.key
-        self._key_to_slot[ticket.key] = slot
-        self._last_used[slot] = ticket.request_clock
         if self.device.type == "cuda":
             self._metrics.host_to_device_bytes += self.store.spec.size_bytes
         self._metrics.transfer_loads += 1
+
+        if ticket.reservation_active:
+            if ticket.demanded:  # pragma: no cover - admission lock invariant
+                raise RuntimeError("demanded lookahead was not logically admitted")
+            if self._slot_reservation[slot] is not ticket:
+                raise RuntimeError("prefetch completion lost its reservation")
+            # Keep the physical slot, but do not create a logical cache entry.
+            # Its staging buffer can finally be reused because the CUDA event
+            # has completed; a later demand will atomically promote this slot.
+            ticket.state = "prefetched"
+            self._free_staging_slot_locked(stage_index, ticket)
+            if ticket.discard_requested:
+                self._retire_undemanded_lookahead_locked(ticket)
+            self._condition.notify_all()
+            return
+
+        existing_key = self._slot_to_key[slot]
+        if existing_key is None:
+            self._slot_to_key[slot] = ticket.key
+            self._key_to_slot[ticket.key] = slot
+            self._last_used[slot] = ticket.request_clock
+        elif existing_key != ticket.key:
+            raise RuntimeError("async transfer destination has a different expert")
         if self._pending_by_key.get(ticket.key) is ticket:
             del self._pending_by_key[ticket.key]
         ticket.state = "resident"
@@ -1406,9 +1733,22 @@ class ExpertSlotCache:
                 and self._slot_generation[slot] == ticket.destination_generation
             ):
                 self._slot_copying[slot] = False
+                if self._slot_reservation[slot] is ticket:
+                    self._slot_reservation[slot] = None
+                    ticket.reservation_active = False
+                if self._slot_to_key[slot] == ticket.key:
+                    del self._key_to_slot[ticket.key]
                 self._slot_to_key[slot] = None
                 self._last_used[slot] = 0
-                self._slot_pin_count[slot] = 0
+                if self._slot_pin_count[slot] > 0:
+                    # Do not reuse a physical buffer while a lease may still
+                    # be executing on a compute stream.  The release path
+                    # records that stream's tail event and only then returns
+                    # the slot to the allocators.
+                    self._slot_quarantined[slot] = True
+                else:
+                    self._slot_quarantined[slot] = False
+                    self._slot_last_use_event[slot] = None
             if self._pending_by_key.get(ticket.key) is ticket:
                 del self._pending_by_key[ticket.key]
             if ticket.stage_index is not None:
@@ -1416,6 +1756,7 @@ class ExpertSlotCache:
             ticket.error = error
             ticket.state = "failed"
             ticket.completed.set()
+            ticket.transfer_enqueued.set()
             self._unobserved_errors[id(ticket)] = error
             self._metrics.transfer_failures += 1
             self._condition.notify_all()
@@ -1433,6 +1774,21 @@ class ExpertSlotCache:
                 )
                 if ticket is not None and state == "h2d"
             )
+        if not inflight:
+            return
+        try:
+            # Event operations consult thread-local CUDA device state when
+            # called from the I/O worker as it waits for staging capacity.
+            torch.cuda.set_device(self.device)
+        except Exception as exc:  # noqa: BLE001 - CUDA worker boundary
+            with self._condition:
+                self._pipeline_error = exc
+            # A failed device selection must terminally wake every waiter.  In
+            # particular, wait_idle()/close() cannot leave a staged ticket in
+            # an eternal h2d state merely because event polling is unavailable.
+            for ticket in inflight:
+                self._fail_transfer(ticket, exc)
+            return
         for ticket in inflight:
             ready = ticket.ready_event
             if ready is None:
@@ -1454,7 +1810,7 @@ class ExpertSlotCache:
                 except RuntimeError:
                     transfer_seconds = 0.0
             with self._condition:
-                if ticket.state != "copying":
+                if ticket.state not in ("copying", "prefetching"):
                     continue
                 self._metrics.transfer_seconds += transfer_seconds
                 self._complete_transfer_locked(ticket)
@@ -1464,40 +1820,60 @@ class ExpertSlotCache:
         ticket: ExpertLoadTicket,
         _use_stream: Any | None,
     ) -> None:
-        with self._condition:
-            if ticket.destination_slot is not None:
-                return
-        slot = self._wait_for_async_slot(ticket.key)
         wait_events: list[Any] = []
-        with self._condition:
-            if ticket.destination_slot is not None:
-                return
-            if ticket.cuda_timeline is not None and self.device.type == "cuda":
-                if self._transfer_stream is None:  # pragma: no cover - invariant
-                    raise RuntimeError("CUDA transfer stream is unavailable")
-                ticket.cuda_timeline.wait_on_origin(self._transfer_stream)
-            evicted_key = self._slot_to_key[slot]
-            if evicted_key is not None and self.device.type == "cuda":
-                last_use = self._slot_last_use_event[slot]
-                if last_use is not None:
-                    wait_events.append(last_use)
+        while True:
+            self._poll_transfer_completions()
+            with self._condition:
+                if ticket.destination_slot is not None:
+                    return
+                if self._pipeline_error is not None:
+                    raise RuntimeError("asynchronous expert pipeline failed") from (
+                        self._pipeline_error
+                    )
+                slot = self._select_async_slot_locked(ticket.key)
+                if slot is None:
+                    self._request_undemanded_reservation_reclaim_locked(ticket.key)
+                    # An in-flight speculative H2D retains staging until its
+                    # completion event; wait outside all CUDA work, then poll
+                    # again to retire the physical-only reservation safely.
+                    self._condition.wait(timeout=0.002)
+                    continue
 
-            if evicted_key is not None:
-                del self._key_to_slot[evicted_key]
-                self._slot_to_key[slot] = None
-                self._last_used[slot] = 0
-                self._metrics.evictions += 1
-            self._slot_generation[slot] += 1
-            ticket.destination_slot = slot
-            ticket.destination_generation = self._slot_generation[slot]
-            ticket.state = "copying"
-            self._slot_copying[slot] = True
-            stage_index = ticket.stage_index
-            if stage_index is None:  # pragma: no cover - storage invariant
-                raise RuntimeError("async ticket has no staging slot")
-            self._stage_state[stage_index] = "h2d"
-            staging_gate_up = self._staging_gate_up[stage_index]
-            staging_down = self._staging_down[stage_index]
+                # Selection and claim happen under one condition critical
+                # section.  The I/O worker cannot reserve this empty slot in
+                # the former select-to-enqueue gap.
+                if ticket.cuda_timeline is not None and self.device.type == "cuda":
+                    if self._transfer_stream is None:  # pragma: no cover - invariant
+                        raise RuntimeError("CUDA transfer stream is unavailable")
+                    ticket.cuda_timeline.wait_on_origin(self._transfer_stream)
+                evicted_key = self._slot_to_key[slot]
+                # A failed transfer can have already removed the logical key
+                # while a previously leased compute stream is still using the
+                # physical slot.  Preserve that stream ordering even when the
+                # slot is logically empty.
+                if self.device.type == "cuda":
+                    last_use = self._slot_last_use_event[slot]
+                    if last_use is not None:
+                        wait_events.append(last_use)
+
+                if evicted_key is not None:
+                    del self._key_to_slot[evicted_key]
+                    self._slot_to_key[slot] = None
+                    self._last_used[slot] = 0
+                    self._metrics.evictions += 1
+                self._slot_generation[slot] += 1
+                ticket.destination_slot = slot
+                ticket.destination_generation = self._slot_generation[slot]
+                ticket.state = "copying"
+                ticket.transfer_enqueued.clear()
+                self._slot_copying[slot] = True
+                stage_index = ticket.stage_index
+                if stage_index is None:  # pragma: no cover - storage invariant
+                    raise RuntimeError("async ticket has no staging slot")
+                self._stage_state[stage_index] = "h2d"
+                staging_gate_up = self._staging_gate_up[stage_index]
+                staging_down = self._staging_down[stage_index]
+                break
 
         transfer_started = time.perf_counter()
         try:
@@ -1511,6 +1887,8 @@ class ExpertSlotCache:
                 with self._condition:
                     ticket.transfer_started_event = started_event
                     ticket.ready_event = ready_event
+                    ticket.transfer_enqueued.set()
+                    self._condition.notify_all()
                 if ticket.cuda_timeline is not None:
                     ticket.cuda_timeline.record_transfer(
                         ticket.key,
@@ -1524,18 +1902,70 @@ class ExpertSlotCache:
                         time.perf_counter() - transfer_started
                     )
                     self._complete_transfer_locked(ticket)
+                    ticket.transfer_enqueued.set()
         except Exception as exc:  # noqa: BLE001 - transactional rollback
             self._fail_transfer(ticket, exc)
             self._raise_ticket_error(ticket)
+
+    def _admit_proactive_reservation_locked(
+        self,
+        ticket: ExpertLoadTicket,
+    ) -> None:
+        """Publish an already-reserved lookahead only at actual demand time."""
+
+        if not ticket.reservation_active:
+            return
+        slot = ticket.destination_slot
+        if slot is None:  # pragma: no cover - reservation invariant
+            raise RuntimeError("reserved lookahead has no destination slot")
+        if self._slot_reservation[slot] is not ticket:
+            raise RuntimeError("reserved lookahead lost its physical slot")
+        if self._slot_to_key[slot] is not None:
+            raise RuntimeError("reserved lookahead slot is already logical")
+        existing_slot = self._key_to_slot.get(ticket.key)
+        if existing_slot is not None:
+            raise RuntimeError("reserved lookahead key is already logical")
+
+        # The slot was verified empty when reserved; promotion therefore makes
+        # no eviction and changes no request accounting.  The demand code
+        # surrounding this call owns the miss and LRU timestamp.
+        self._slot_reservation[slot] = None
+        ticket.reservation_active = False
+        self._slot_to_key[slot] = ticket.key
+        self._key_to_slot[ticket.key] = slot
+        self._last_used[slot] = ticket.request_clock
+        if ticket.state == "prefetched":
+            ticket.state = "resident"
+            if self._pending_by_key.get(ticket.key) is ticket:
+                del self._pending_by_key[ticket.key]
+            ticket.completed.set()
+        elif ticket.state == "prefetching":
+            ticket.state = "copying"
+        elif ticket.state != "copying":  # pragma: no cover - state invariant
+            raise RuntimeError("reserved lookahead is not ready to admit")
+        self._condition.notify_all()
+
+    def _wait_for_transfer_enqueue(self, ticket: ExpertLoadTicket) -> None:
+        """Wait only for a worker to publish its CUDA completion event."""
+
+        started = time.perf_counter()
+        while not ticket.transfer_enqueued.wait(timeout=0.002):
+            self._poll_transfer_completions()
+        elapsed = time.perf_counter() - started
+        with self._condition:
+            self._metrics.demand_wait_seconds += elapsed
+        self._raise_ticket_error(ticket)
 
     def _account_demand(self, ticket: ExpertLoadTicket) -> None:
         with self._condition:
             self._clock += 1
             self._metrics.requests += 1
             ticket.request_clock = self._clock
+            ticket.demanded = True
             existing_slot = self._key_to_slot.get(ticket.key)
             if existing_slot is None:
                 self._metrics.misses += 1
+                self._admit_proactive_reservation_locked(ticket)
                 return
             self._metrics.hits += 1
             self._last_used[existing_slot] = self._clock
@@ -1556,7 +1986,7 @@ class ExpertSlotCache:
             self._wait_for_storage(ticket)
             self._schedule_ticket_transfer(ticket, compute_stream)
         elif ticket.state == "copying" and ticket.ready_event is None:
-            self._schedule_ticket_transfer(ticket, compute_stream)
+            self._wait_for_transfer_enqueue(ticket)
         self._raise_ticket_error(ticket)
 
         ready = ticket.ready_event
@@ -1616,6 +2046,14 @@ class ExpertSlotCache:
             self._slot_pin_count[slot] -= 1
             if use_event is not None:
                 self._slot_last_use_event[slot] = use_event
+            if self._slot_pin_count[slot] == 0 and self._slot_quarantined[slot]:
+                # `_fail_transfer` already removed the logical mapping.  Keep
+                # the just-recorded last-use event so the next H2D waits for
+                # the outstanding compute before overwriting this buffer.
+                self._slot_quarantined[slot] = False
+                self._slot_copying[slot] = False
+                self._slot_to_key[slot] = None
+                self._last_used[slot] = 0
             self._condition.notify_all()
 
     def resolve(self, ticket: ExpertLoadTicket) -> ExpertWeights:
@@ -1674,6 +2112,7 @@ class ExpertSlotCache:
             self._metrics.misses += 1
             slot = self._select_slot(key)
             evicted_key = self._slot_to_key[slot]
+            last_use = self._slot_last_use_event[slot]
 
             staging_slot = self._next_staging_slot
             self._next_staging_slot = (staging_slot + 1) % self.staging_slots
@@ -1692,8 +2131,12 @@ class ExpertSlotCache:
             self._metrics.storage_bytes += bytes_read
             self._metrics.storage_loads += 1
 
-            if evicted_key is not None:
+            if evicted_key is not None or last_use is not None:
+                # In sync mode there is no transfer stream on which to wait
+                # for a prior lease's tail event.  Synchronize before copying
+                # even if an earlier failure made the slot logically empty.
                 self._synchronize_device()
+            if evicted_key is not None:
                 del self._key_to_slot[evicted_key]
                 self._slot_to_key[slot] = None
                 self._last_used[slot] = 0
@@ -1760,12 +2203,46 @@ class ExpertSlotCache:
                     self._unobserved_errors.clear()
                     pending = tuple(self._pending_by_key.values())
                     stages_idle = all(state == "free" for state in self._stage_state)
-                    idle = not pending and stages_idle
+                    idle = not pending and stages_idle and self._queued_job_count == 0
                 if first_error is None and unobserved_errors:
                     first_error = unobserved_errors[0]
                 if idle:
                     break
                 for ticket in pending:
+                    with self._condition:
+                        speculative = ticket.is_lookahead and not ticket.demanded
+                        retired = (
+                            self._retire_undemanded_lookahead_locked(ticket)
+                            if speculative
+                            else False
+                        )
+                        state = ticket.state
+                    if speculative:
+                        if retired:
+                            continue
+                        try:
+                            if state in ("queued", "reading"):
+                                ticket.storage_done.wait(timeout=0.002)
+                            elif state == "prefetching":
+                                self._wait_for_transfer_enqueue(ticket)
+                                ready = ticket.ready_event
+                                if ready is not None:
+                                    ready.synchronize()
+                                self._poll_transfer_completions()
+                            elif state == "prefetched":
+                                # A defensive pin gate can defer retirement
+                                # until a concurrent lease has recorded its
+                                # stream-tail event and released the slot.
+                                with self._condition:
+                                    self._condition.wait(timeout=0.002)
+                            else:  # pragma: no cover - state invariant
+                                raise RuntimeError(
+                                    "undemanded lookahead did not make progress"
+                                )
+                        except Exception as exc:  # noqa: BLE001 - drain all tickets
+                            if first_error is None:
+                                first_error = exc
+                        continue
                     try:
                         stream = (
                             torch.cuda.current_stream(self.device)
@@ -1781,6 +2258,16 @@ class ExpertSlotCache:
                     except Exception as exc:  # noqa: BLE001 - drain all tickets
                         if first_error is None:
                             first_error = exc
+                        with self._condition:
+                            still_pending = (
+                                self._pending_by_key.get(ticket.key) is ticket
+                            )
+                        if still_pending:
+                            # A global pipeline failure (for example CUDA
+                            # device selection) makes this ready ticket
+                            # impossible to materialize.  Terminally release
+                            # it so wait_idle()/close() can finish draining.
+                            self._fail_transfer(ticket, exc)
                 self._poll_transfer_completions()
         if first_error is not None:
             raise first_error
