@@ -111,6 +111,26 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             _HARNESS._validate_args(self._args("--pipeline", "async"))
         with self.assertRaisesRegex(ValueError, "at least two staging slots"):
             _HARNESS._validate_args(self._args("--pipeline", "adaptive"))
+        with self.assertRaisesRegex(ValueError, "requires --pipeline-profile"):
+            _HARNESS._validate_args(
+                self._args("--pipeline", "auto", "--staging-slots", "2")
+            )
+        with self.assertRaisesRegex(ValueError, "only valid"):
+            _HARNESS._validate_args(
+                self._args("--pipeline-profile", str(self.root / "profile.json"))
+            )
+        with self.assertRaisesRegex(ValueError, "not available"):
+            _HARNESS._validate_args(
+                self._args(
+                    "--pipeline",
+                    "auto",
+                    "--pipeline-profile",
+                    str(self.root / "profile.json"),
+                    "--staging-slots",
+                    "2",
+                    "--demo-mode",
+                )
+            )
         async_args = self._args(
             "--pipeline",
             "async",
@@ -127,6 +147,16 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         )
         _HARNESS._validate_args(adaptive_args)
         self.assertEqual(adaptive_args.pipeline, "adaptive")
+        auto_args = self._args(
+            "--pipeline",
+            "auto",
+            "--pipeline-profile",
+            str(self.root / "profile.json"),
+            "--staging-slots",
+            "2",
+        )
+        _HARNESS._validate_args(auto_args)
+        self.assertEqual(auto_args.pipeline, "auto")
 
     def test_workload_file_selects_exact_prompt(self) -> None:
         workload_path = self.root / "workloads.json"

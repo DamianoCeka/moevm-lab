@@ -99,9 +99,57 @@ metrics expose `adaptive_async_forwards`,
 This selector is intentionally simple. It does not yet use learned workload
 history, timing feedback, queue pressure, or a calibrated cost model.
 
+### Measured `auto` profiles
+
+The benchmark also accepts a fail-closed per-pass schedule built from at least
+three comparable sync/async pairs. Build the profile with results from the same
+GPU, model, workload and cache budget:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\build_paged_pipeline_profile.py `
+  --pair .\results\r1\sync.json .\results\r1\async.json `
+  --pair .\results\r2\sync.json .\results\r2\async.json `
+  --pair .\results\r3\sync.json .\results\r3\async.json `
+  --output .\results\pipeline-profile.json
+```
+
+Then run the same bound workload:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\benchmark_paged_olmoe.py `
+  --snapshot <pinned-local-snapshot> `
+  --output .\results\paged-auto.json `
+  --pipeline auto `
+  --pipeline-profile .\results\pipeline-profile.json `
+  --staging-slots 2
+```
+
+The builder first requires exact token identity and identical cache, eviction,
+storage and H2D primitives within every pair. It selects async for a pass only
+when async wins every pair and the median paired `sync / async` ratio clears
+the default 3% threshold. Mixed or smaller evidence selects sync. Cold and
+immediate retained passes are decided independently.
+
+The profile binds the selection to the exact GPU UUID and VRAM size, pinned
+checkpoint hashes, workload/token budget, cache policy and capacity, Python
+environment, benchmark-script hash and paged-runtime hash. Any mismatch aborts
+before model allocation. The cache owns async infrastructure for the lifetime
+of an auto run, drains all work outside the pass timers, and only then switches
+the active data path. This avoids treating an old profile as transferable to a
+different machine or implementation.
+
+This is measured offline selection, not a universal online cost model. It does
+not adapt inside a pass, extrapolate to unseen prompts, or replace multi-workload
+validation.
+
 At the Python API level, `ExpertSlotCache(..., pipeline_mode="async")` selects
 the fixed path and `pipeline_mode="adaptive"` selects the conservative rule.
 Both CUDA modes require pinned staging memory.
+
+An async-capable cache may call `set_pipeline_mode()` at a drained pass
+boundary. A cache constructed as sync-only cannot enable async later, and a
+closed cache cannot be switched. The benchmark is the supported owner of this
+mechanism for measured `auto` profiles.
 
 Adaptive ticket scheduling is internal to `PagedExpertRuntime`. Public
 `ExpertSlotCache.submit()` and `resolve()` remain fixed-async APIs and are

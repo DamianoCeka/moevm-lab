@@ -39,6 +39,11 @@
   for routed-layer calls that start with free eligible slots and at least two
   requested misses; calls starting with a full partition use sync. Per-forward
   and per-expert decision counters make the rule auditable in benchmark JSON.
+- Added measured pipeline profiles built from at least three exact-gated
+  sync/async pairs. `--pipeline auto` can select cold and retained paths
+  independently, switches only at a drained pass boundary, and rejects profiles
+  that do not match the GPU, model, workload, budget, environment or source
+  hashes.
 - Added a deterministic study summarizer that recomputes pair gates, validates
   the exact experiment matrix and strips private execution paths, plus support
   for fully resident routing-capture models that do not expose an Accelerate
