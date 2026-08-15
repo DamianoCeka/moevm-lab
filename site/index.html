@@ -75,7 +75,7 @@
           </p>
           <p class="boundary-note">
             Not a Kimi K3 runtime. No production-serving or universal speedup
-            claim.
+            claim. OLMoE-first prototype (public revision-pinned).
           </p>
         </div>
 
@@ -300,8 +300,15 @@
         </ol>
 
         <p class="workflow-note">
-          The real prototype exercises a bounded OLMoE paging path. It is a
-          research instrument, not a production serving stack.
+          The current prototype exercises a bounded OLMoE paging path with a
+          pinned public revision. It is a research instrument, not a production
+          serving stack.
+        </p>
+
+        <p class="workflow-note">
+          Can we use other sparse MoE models? Yes, in principle. Today we need a
+          compatible expert-routing adapter plus memory-map and transfer profile
+          calibration for the new checkpoint before reliable claims are available.
         </p>
       </section>
 
