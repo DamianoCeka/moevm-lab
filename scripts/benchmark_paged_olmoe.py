@@ -36,6 +36,7 @@ from moevm.pipeline_profile import (
     result_binding,
     validate_profile_binding,
 )
+from moevm.timeline_metrics import CudaInterval, summarize_cuda_timeline
 
 _HASH_BLOCK_BYTES = 16 * 1024 * 1024
 _VRAM_SAFETY_MARGIN_BYTES = int(1.25 * 1024**3)
@@ -73,6 +74,14 @@ _TIME_METRICS = (
 _PIPELINE_TIME_METRICS = (
     "storage_queue_seconds",
     "demand_wait_seconds",
+)
+_CUDA_TIMELINE_SCHEMA_VERSION = 1
+_CUDA_TIMELINE_METHOD = "cuda_events_v1"
+_CUDA_TIMELINE_SCOPE = "paged_expert_h2d_vs_expert_compute"
+_CUDA_TIMELINE_UNIT = "milliseconds"
+_CUDA_TIMELINE_AGGREGATION = (
+    "Summed per-model-call CUDA-event lane summaries; timestamps from different "
+    "model calls are not unioned."
 )
 
 
@@ -617,7 +626,163 @@ def _run_model_call(
         _sync_cuda(torch)
     if not isinstance(capture.result, dict):
         raise RuntimeError("CUDA timeline capture did not produce a result")
+    _validate_cuda_timeline_call(capture.result, "CUDA timeline capture")
     return output, capture.result
+
+
+def _telemetry_mapping(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{name} must be an object")
+    return value
+
+
+def _telemetry_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _telemetry_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0:
+        raise RuntimeError(f"{name} must be finite and >= 0")
+    return result
+
+
+def _timeline_summary_equal(actual: object, expected: object) -> bool:
+    """Compare derived JSON values without treating booleans as integers."""
+
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or actual.keys() != expected.keys():
+            return False
+        return all(
+            _timeline_summary_equal(actual[key], expected[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _timeline_summary_equal(left, right)
+                for left, right in zip(actual, expected, strict=True)
+            )
+        )
+    if isinstance(expected, float):
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, (int, float))
+            and math.isfinite(float(actual))
+            and float(actual) == expected
+        )
+    if isinstance(expected, int):
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, int)
+            and actual == expected
+        )
+    return type(actual) is type(expected) and actual == expected
+
+
+def _timeline_span(
+    raw: object,
+    name: str,
+) -> tuple[str, int, CudaInterval]:
+    span = _telemetry_mapping(raw, name)
+    lane = span.get("lane")
+    if lane not in {"h2d", "expert_compute"}:
+        raise RuntimeError(f"{name}.lane must be h2d or expert_compute")
+    sequence = _telemetry_integer(span.get("sequence"), f"{name}.sequence")
+    layer = _telemetry_integer(span.get("layer"), f"{name}.layer")
+    expert = _telemetry_integer(span.get("expert"), f"{name}.expert")
+    expected_name = f"{lane}:{sequence}:L{layer}:E{expert}"
+    if span.get("name") != expected_name:
+        raise RuntimeError(f"{name}.name must equal {expected_name!r}")
+    start_ms = _telemetry_number(span.get("start_ms"), f"{name}.start_ms")
+    end_ms = _telemetry_number(span.get("end_ms"), f"{name}.end_ms")
+    if end_ms < start_ms:
+        raise RuntimeError(f"{name}.end_ms must be greater than or equal to start_ms")
+    duration_ms = _telemetry_number(span.get("duration_ms"), f"{name}.duration_ms")
+    if not math.isclose(duration_ms, end_ms - start_ms, rel_tol=0.0, abs_tol=1e-12):
+        raise RuntimeError(f"{name}.duration_ms is inconsistent with its endpoints")
+    return (
+        lane,
+        sequence,
+        CudaInterval(
+            name=expected_name,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        ),
+    )
+
+
+def _validate_cuda_timeline_call(
+    raw: object,
+    name: str,
+) -> tuple[str, dict[str, Any], str | None]:
+    """Fail closed unless one runtime capture matches the public v1 schema.
+
+    A future worker-aware runtime can append H2D spans on its own stream: the
+    schema deliberately validates their metadata and shared-origin timing but
+    makes no assumption about their record order or sequence contiguity.
+    """
+
+    timeline = _telemetry_mapping(raw, name)
+    if (
+        _telemetry_integer(timeline.get("schema_version"), f"{name}.schema_version")
+        != _CUDA_TIMELINE_SCHEMA_VERSION
+    ):
+        raise RuntimeError(f"{name}.schema_version must be 1")
+    if timeline.get("complete") is not True:
+        raise RuntimeError(f"{name} must be complete")
+    if timeline.get("method") != _CUDA_TIMELINE_METHOD:
+        raise RuntimeError(f"{name}.method is invalid")
+    if timeline.get("scope") != _CUDA_TIMELINE_SCOPE:
+        raise RuntimeError(f"{name}.scope is invalid")
+    if timeline.get("unit") != _CUDA_TIMELINE_UNIT:
+        raise RuntimeError(f"{name}.unit is invalid")
+    status = timeline.get("status")
+    if status not in {"measured", "not_applicable"}:
+        raise RuntimeError(f"{name}.status must be measured or not_applicable")
+    raw_spans = timeline.get("spans")
+    if not isinstance(raw_spans, list):
+        raise RuntimeError(f"{name}.spans must be an array")
+
+    transfers: list[CudaInterval] = []
+    compute: list[CudaInterval] = []
+    sequences: set[int] = set()
+    for index, raw_span in enumerate(raw_spans):
+        lane, sequence, interval = _timeline_span(raw_span, f"{name}.spans[{index}]")
+        if sequence in sequences:
+            raise RuntimeError(f"{name}.spans[{index}].sequence must be unique")
+        sequences.add(sequence)
+        if lane == "h2d":
+            transfers.append(interval)
+        else:
+            compute.append(interval)
+
+    expected_summary = summarize_cuda_timeline(
+        transfers=transfers,
+        compute=compute,
+    )
+    expected_summary.pop("intervals")
+    if not _timeline_summary_equal(timeline.get("summary"), expected_summary):
+        raise RuntimeError(f"{name}.summary is not derived from its raw spans")
+
+    has_both_lanes = bool(transfers) and bool(compute)
+    reason = timeline.get("reason")
+    if status == "measured":
+        if not has_both_lanes:
+            raise RuntimeError(f"{name}.status=measured requires both event lanes")
+        if reason is not None:
+            raise RuntimeError(f"{name}.reason must be null when status=measured")
+        return status, expected_summary, None
+    if has_both_lanes:
+        raise RuntimeError(f"{name}.status=not_applicable has both event lanes")
+    if not isinstance(reason, str) or not reason.strip():
+        raise RuntimeError(f"{name}.reason is required when status=not_applicable")
+    return status, expected_summary, reason
 
 
 def _aggregate_cuda_overlap(
@@ -625,6 +790,8 @@ def _aggregate_cuda_overlap(
 ) -> dict[str, Any]:
     """Aggregate independent model-call captures without mixing their origins."""
 
+    if not calls:
+        raise RuntimeError("CUDA overlap telemetry requires at least one model call")
     h2d_interval_count = 0
     compute_interval_count = 0
     h2d_active_durations: list[float] = []
@@ -633,17 +800,14 @@ def _aggregate_cuda_overlap(
     active_saved_durations: list[float] = []
     measured_calls = 0
     reasons: list[str] = []
-    for call in calls:
-        if call.get("complete") is not True:
-            raise RuntimeError("CUDA timeline capture is incomplete")
-        summary = call.get("summary")
-        if not isinstance(summary, dict):
-            raise RuntimeError("CUDA timeline capture is missing its summary")
-        transfer = summary.get("transfer")
-        compute = summary.get("compute")
-        overlap = summary.get("overlap")
-        if not all(isinstance(item, dict) for item in (transfer, compute, overlap)):
-            raise RuntimeError("CUDA timeline capture has an invalid lane summary")
+    for index, call in enumerate(calls):
+        status, summary, reason = _validate_cuda_timeline_call(
+            call,
+            f"CUDA timeline capture[{index}]",
+        )
+        transfer = summary["transfer"]
+        compute = summary["compute"]
+        overlap = summary["overlap"]
         h2d_interval_count += int(transfer["interval_count"])
         compute_interval_count += int(compute["interval_count"])
         h2d_active_durations.append(float(transfer["active_duration_ms"]))
@@ -652,12 +816,10 @@ def _aggregate_cuda_overlap(
         active_saved_durations.append(
             float(overlap["active_duration_saved_by_overlap_ms"])
         )
-        if call.get("status") == "measured":
+        if status == "measured":
             measured_calls += 1
-        else:
-            reason = call.get("reason")
-            if isinstance(reason, str) and reason not in reasons:
-                reasons.append(reason)
+        elif reason not in reasons:
+            reasons.append(reason)
 
     status = "measured" if measured_calls else "not_applicable"
     h2d_union_ms = math.fsum(h2d_active_durations)
@@ -665,11 +827,11 @@ def _aggregate_cuda_overlap(
     overlap_ms = math.fsum(overlap_durations)
     active_saved_ms = math.fsum(active_saved_durations)
     return {
-        "schema_version": 1,
+        "schema_version": _CUDA_TIMELINE_SCHEMA_VERSION,
         "status": status,
-        "method": "cuda_events_v1",
-        "scope": "paged_expert_h2d_vs_expert_compute",
-        "unit": "milliseconds",
+        "method": _CUDA_TIMELINE_METHOD,
+        "scope": _CUDA_TIMELINE_SCOPE,
+        "unit": _CUDA_TIMELINE_UNIT,
         "model_call_count": len(calls),
         "measured_model_call_count": measured_calls,
         "h2d_interval_count": h2d_interval_count,
@@ -683,10 +845,7 @@ def _aggregate_cuda_overlap(
         "h2d_exposed_ms": max(0.0, h2d_union_ms - overlap_ms),
         "active_duration_saved_by_overlap_ms": active_saved_ms,
         "reason": None if measured_calls else "; ".join(reasons),
-        "aggregation": (
-            "Summed per-model-call CUDA-event lane summaries; timestamps from "
-            "different model calls are not unioned."
-        ),
+        "aggregation": _CUDA_TIMELINE_AGGREGATION,
     }
 
 

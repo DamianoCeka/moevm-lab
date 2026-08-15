@@ -486,6 +486,15 @@ class _CudaTimelineEventSpan:
     ended_event: Any
 
 
+@dataclass(slots=True)
+class _CudaTimelineTransferLedger:
+    """One transfer a capture admitted before an I/O worker could see it."""
+
+    key: ExpertKey
+    state: str = "reserved"
+    ready_event: Any | None = None
+
+
 def _cuda_timeline_payload(
     origin_event: Any,
     spans: Iterable[_CudaTimelineEventSpan],
@@ -563,61 +572,191 @@ def _cuda_timeline_payload(
 class _CudaTimelineCapture:
     """Collect H2D and paged-expert compute spans for one model invocation."""
 
+    _ACTIVE = "active"
+    _CLOSING = "closing"
+    _FINISHED = "finished"
+    _ABORTED = "aborted"
+
     def __init__(self, device: torch.device) -> None:
         if device.type != "cuda":
             raise ValueError("CUDA timeline capture requires a CUDA device")
         self.device = device
+        self._condition = threading.Condition(threading.RLock())
         self._origin_event: Any | None = None
         self._spans: list[_CudaTimelineEventSpan] = []
         self._next_sequence = 0
-        self._finished = False
+        self._state = "new"
+        # Every async ticket is admitted here before it becomes visible to the
+        # I/O worker.  A worker must claim the entry before it records CUDA
+        # work, then either commit its event pair or cancel it.  This closes
+        # the old race where a worker could append an H2D span after the
+        # forward thread had already finalized the capture.
+        self._transfer_ledger: dict[int, _CudaTimelineTransferLedger] = {}
+        self._incomplete_reason: str | None = None
         self.result: dict[str, Any] | None = None
 
     def begin(self, compute_stream: Any) -> None:
-        if self._origin_event is not None:
-            raise RuntimeError("CUDA timeline capture has already started")
-        origin = torch.cuda.Event(enable_timing=True)
-        origin.record(compute_stream)
-        self._origin_event = origin
+        with self._condition:
+            if self._state != "new":
+                raise RuntimeError("CUDA timeline capture has already started")
+            origin = torch.cuda.Event(enable_timing=True)
+            origin.record(compute_stream)
+            self._origin_event = origin
+            self._state = self._ACTIVE
 
     @property
     def origin_event(self) -> Any:
-        if self._origin_event is None:
-            raise RuntimeError("CUDA timeline capture has not started")
-        return self._origin_event
+        with self._condition:
+            if self._origin_event is None:
+                raise RuntimeError("CUDA timeline capture has not started")
+            return self._origin_event
 
     def wait_on_origin(self, stream: Any) -> None:
         """Make an instrumented stream causally comparable with the origin."""
         stream.wait_event(self.origin_event)
 
+    def reserve_transfer(self, ticket: ExpertLoadTicket) -> bool:
+        """Admit one async ticket before the I/O worker can dequeue it.
+
+        The cache calls this while the ticket is still private to the submitter.
+        Returning ``False`` means the capture is already closing, so the cache
+        must keep executing normally but must not attribute later CUDA work to
+        this trace.
+        """
+
+        token = id(ticket)
+        with self._condition:
+            if self._state != self._ACTIVE:
+                self._mark_incomplete_locked(
+                    "an async ticket was admitted after CUDA timeline close began"
+                )
+                return False
+            existing = self._transfer_ledger.get(token)
+            if existing is not None:
+                if existing.key != ticket.key:  # pragma: no cover - identity invariant
+                    self._mark_incomplete_locked(
+                        "a CUDA timeline ticket identity was reused for another expert"
+                    )
+                    return False
+                return True
+            self._transfer_ledger[token] = _CudaTimelineTransferLedger(ticket.key)
+            return True
+
+    def claim_transfer(self, ticket: ExpertLoadTicket) -> bool:
+        """Give one scheduler authority to enqueue this ticket's H2D.
+
+        The claim is deliberately taken before ``wait_on_origin`` and timing
+        events.  ``begin_close`` rejects unclaimed work, while a claim already
+        in progress is allowed to commit and is waited before finalization.
+        """
+
+        token = id(ticket)
+        with self._condition:
+            entry = self._transfer_ledger.get(token)
+            if self._state != self._ACTIVE or entry is None:
+                if self._state == self._ACTIVE:
+                    self._mark_incomplete_locked(
+                        "an async H2D was not reserved by the CUDA timeline"
+                    )
+                return False
+            if entry.state != "reserved":
+                self._mark_incomplete_locked(
+                    "a CUDA timeline transfer was claimed more than once"
+                )
+                return False
+            entry.state = "claimed"
+            self._condition.notify_all()
+            return True
+
+    def commit_transfer(
+        self,
+        ticket: ExpertLoadTicket,
+        started_event: Any,
+        ended_event: Any,
+    ) -> bool:
+        """Commit an already-claimed H2D event pair to the trace ledger."""
+
+        token = id(ticket)
+        with self._condition:
+            entry = self._transfer_ledger.get(token)
+            if (
+                entry is None
+                or entry.state != "claimed"
+                or self._state not in (self._ACTIVE, self._CLOSING)
+            ):
+                self._mark_incomplete_locked(
+                    "a CUDA timeline H2D committed outside its capture lifetime"
+                )
+                return False
+            self._record_locked("h2d", ticket.key, started_event, ended_event)
+            # Keep the ready event in the ledger until the close path has
+            # synchronized the device.  A recorded span alone proves only that
+            # work was enqueued, not that its endpoint is safe to timestamp.
+            entry.state = "enqueued"
+            entry.ready_event = ended_event
+            self._condition.notify_all()
+            return True
+
+    def cancel_transfer(self, ticket: ExpertLoadTicket, reason: str) -> None:
+        """Failure-close the capture when an admitted H2D cannot be measured."""
+
+        token = id(ticket)
+        with self._condition:
+            if self._transfer_ledger.pop(token, None) is not None:
+                self._mark_incomplete_locked(reason)
+                self._condition.notify_all()
+
+    def invalidate(self, reason: str) -> None:
+        """Mark this evidence unusable without changing runtime behavior."""
+
+        with self._condition:
+            self._mark_incomplete_locked(reason)
+            self._condition.notify_all()
+
     def record_transfer(
         self, key: ExpertKey, started_event: Any, ended_event: Any
-    ) -> None:
-        self._record("h2d", key, started_event, ended_event)
+    ) -> bool:
+        """Record a synchronous H2D that has no worker ticket ledger."""
+
+        with self._condition:
+            if self._state != self._ACTIVE:
+                self._mark_incomplete_locked(
+                    "a CUDA timeline H2D was recorded after capture close began"
+                )
+                return False
+            self._record_locked("h2d", key, started_event, ended_event)
+            return True
 
     def begin_compute(self, key: ExpertKey, stream: Any) -> Any:
         # A caller may enter the capture on one stream and run a model forward
         # on another.  Make every instrumented compute stream depend on the
         # common origin before using elapsed-time comparisons across streams.
-        self.wait_on_origin(stream)
-        started = torch.cuda.Event(enable_timing=True)
-        started.record(stream)
-        return started
+        with self._condition:
+            if self._state != self._ACTIVE:
+                raise RuntimeError("cannot start compute after CUDA timeline close")
+            self.wait_on_origin(stream)
+            started = torch.cuda.Event(enable_timing=True)
+            started.record(stream)
+            return started
 
     def end_compute(self, key: ExpertKey, started_event: Any, stream: Any) -> None:
         ended = torch.cuda.Event(enable_timing=True)
         ended.record(stream)
-        self._record("expert_compute", key, started_event, ended)
+        with self._condition:
+            if self._state != self._ACTIVE:
+                self._mark_incomplete_locked(
+                    "a CUDA timeline compute span ended after capture close began"
+                )
+                return
+            self._record_locked("expert_compute", key, started_event, ended)
 
-    def _record(
+    def _record_locked(
         self,
         lane: str,
         key: ExpertKey,
         started_event: Any,
         ended_event: Any,
     ) -> None:
-        if self._finished:
-            raise RuntimeError("cannot append spans to a finished CUDA timeline")
         self._spans.append(
             _CudaTimelineEventSpan(
                 lane=lane,
@@ -629,20 +768,135 @@ class _CudaTimelineCapture:
         )
         self._next_sequence += 1
 
+    def _mark_incomplete_locked(self, reason: str) -> None:
+        if self._incomplete_reason is None:
+            self._incomplete_reason = reason
+        if self._state == self._FINISHED:
+            # A late CUDA readiness failure can be observed by the cache
+            # immediately after scope snapshot.  Do not leave a stale
+            # ``complete`` result visible in that race.
+            self.result = self._incomplete_payload_locked()
+
+    def _begin_close(self) -> None:
+        """Stop admission and cancel worker work that never claimed H2D."""
+
+        with self._condition:
+            if self._state == self._ACTIVE:
+                self._state = self._CLOSING
+                unclaimed = tuple(
+                    token
+                    for token, entry in self._transfer_ledger.items()
+                    if entry.state == "reserved"
+                )
+                if unclaimed:
+                    for token in unclaimed:
+                        del self._transfer_ledger[token]
+                    self._mark_incomplete_locked(
+                        "an async H2D was cancelled before it could be measured"
+                    )
+                self._condition.notify_all()
+                return
+            if self._state in (self._CLOSING, self._FINISHED, self._ABORTED):
+                return
+            raise RuntimeError("CUDA timeline capture has not started")
+
+    def _wait_for_claimed_transfers(self) -> None:
+        """Wait until all pre-close worker claims commit or cancel."""
+
+        with self._condition:
+            while any(
+                entry.state == "claimed" for entry in self._transfer_ledger.values()
+            ):
+                self._condition.wait(timeout=0.002)
+
+    def _settle_enqueued_transfers(self) -> None:
+        """Retire H2Ds only after device synchronization made events complete."""
+
+        with self._condition:
+            for token, entry in tuple(self._transfer_ledger.items()):
+                if entry.state != "enqueued":
+                    self._mark_incomplete_locked(
+                        "an async H2D did not settle before CUDA timeline snapshot"
+                    )
+                    del self._transfer_ledger[token]
+                    continue
+                ready = entry.ready_event
+                try:
+                    complete = ready is not None and bool(ready.query())
+                except Exception:  # noqa: BLE001 - evidence must fail closed
+                    complete = False
+                if not complete:
+                    self._mark_incomplete_locked(
+                        "an async H2D event was incomplete after CUDA synchronization"
+                    )
+                del self._transfer_ledger[token]
+            self._condition.notify_all()
+
+    def _incomplete_payload_locked(self) -> dict[str, Any]:
+        summary = summarize_cuda_timeline(transfers=(), compute=())
+        return {
+            "schema_version": 1,
+            "status": "incomplete",
+            "method": "cuda_events_v1",
+            "scope": "paged_expert_h2d_vs_expert_compute",
+            "unit": "milliseconds",
+            "complete": False,
+            "reason": self._incomplete_reason
+            or "CUDA timeline capture did not settle cleanly",
+            "spans": [],
+            "summary": {
+                key: value for key, value in summary.items() if key != "intervals"
+            },
+        }
+
     def finish(self) -> dict[str, Any]:
-        if self._finished:
-            if self.result is None:  # pragma: no cover - internal invariant
-                raise RuntimeError("finished CUDA timeline is missing its result")
+        self._begin_close()
+        self._wait_for_claimed_transfers()
+        try:
+            torch.cuda.synchronize(self.device)
+        except Exception as exc:  # noqa: BLE001 - evidence must fail closed
+            self.invalidate(f"CUDA timeline synchronization failed: {exc}")
+        self._settle_enqueued_transfers()
+        with self._condition:
+            if self._state in (self._FINISHED, self._ABORTED):
+                if self.result is None:  # pragma: no cover - internal invariant
+                    raise RuntimeError("finished CUDA timeline is missing its result")
+                return self.result
+            if self._incomplete_reason is not None:
+                self.result = self._incomplete_payload_locked()
+                self._state = self._FINISHED
+                return self.result
+            origin = self.origin_event
+            spans = tuple(self._spans)
+        try:
+            result = _cuda_timeline_payload(origin, spans)
+        except Exception as exc:  # noqa: BLE001 - evidence must fail closed
+            self.invalidate(f"CUDA timeline materialization failed: {exc}")
+            with self._condition:
+                self.result = self._incomplete_payload_locked()
+                self._state = self._FINISHED
+                return self.result
+        with self._condition:
+            # No new claims are possible after _begin_close(), so this is the
+            # final immutable trace visible to callers after scope exit.
+            if self._incomplete_reason is not None:
+                self.result = self._incomplete_payload_locked()
+            else:
+                self.result = result
+            self._state = self._FINISHED
             return self.result
-        torch.cuda.synchronize(self.device)
-        self.result = _cuda_timeline_payload(self.origin_event, self._spans)
-        self._finished = True
-        return self.result
 
     def abort(self) -> None:
         """Release event references after a failed model invocation."""
-        self._spans.clear()
-        self._finished = True
+        with self._condition:
+            if self._state in (self._FINISHED, self._ABORTED):
+                return
+            self._state = self._ABORTED
+            self._transfer_ledger.clear()
+            self._mark_incomplete_locked("the model invocation failed during capture")
+            self._spans.clear()
+            self.result = self._incomplete_payload_locked()
+            self._condition.notify_all()
 
 
 class _CudaTimelineCaptureScope:
@@ -911,6 +1165,10 @@ class ExpertSlotCache:
         self._closed = False
         self._close_lock = threading.Lock()
         self._transfer_stream: Any | None = None
+        # Both the foreground and the persistent I/O worker can submit work to
+        # this one CUDA stream.  Serialize a complete dependency/start/copy/end
+        # sequence so timing spans cannot nest or interleave on the same lane.
+        self._transfer_submit_lock = threading.Lock()
         self._pipeline_error: BaseException | None = None
         if self._uses_async_infrastructure:
             self._jobs = queue.Queue(maxsize=staging_slots)
@@ -1071,6 +1329,11 @@ class ExpertSlotCache:
 
         if self._pending_by_key.get(ticket.key) is ticket:
             del self._pending_by_key[ticket.key]
+        if ticket.cuda_timeline is not None:
+            ticket.cuda_timeline.cancel_transfer(
+                ticket,
+                "an async lookahead was cancelled before capture completion",
+            )
         ticket.state = "discarded"
         ticket.storage_done.set()
         ticket.completed.set()
@@ -1103,14 +1366,13 @@ class ExpertSlotCache:
     ) -> bool:
         """Non-blockingly enqueue one physical-only H2D from the I/O worker.
 
-        CUDA timeline capture deliberately opts out for now.  Capture spans are
-        currently finalized by the forward thread, so allowing a worker to add
-        a speculative span after capture close could make a ``complete`` trace
-        incomplete.  The normal demand path continues to provide exact
-        telemetry until capture admission has its own lifecycle protocol.
+        A capture ticket is reserved before the worker can dequeue it.  The
+        worker claims that reservation before it makes the transfer stream wait
+        on the common origin or records timing events; closing captures reject
+        new claims but leave the normal, uninstrumented cache path intact.
         """
 
-        if self.device.type != "cuda" or ticket.cuda_timeline is not None:
+        if self.device.type != "cuda":
             return False
         with self._condition:
             if (
@@ -1144,11 +1406,22 @@ class ExpertSlotCache:
             staging_gate_up = self._staging_gate_up[stage_index]
             staging_down = self._staging_down[stage_index]
 
+        cuda_timeline = ticket.cuda_timeline
+        timeline_claimed = False
         try:
             # CUDA device selection is thread-local.  The transfer stream is
             # created by the cache owner but can safely be submitted from this
             # persistent I/O worker once its device is selected here.
             torch.cuda.set_device(self.device)
+            if cuda_timeline is not None:
+                timeline_claimed = cuda_timeline.claim_transfer(ticket)
+                if timeline_claimed:
+                    if self._transfer_stream is None:  # pragma: no cover - invariant
+                        raise RuntimeError("CUDA transfer stream is unavailable")
+                    # Submit the origin dependency under the same transfer
+                    # lock as timing/copy events, so it is immediately before
+                    # this H2D's start event on the shared lane.
+                    wait_events.append(cuda_timeline.origin_event)
             started_event, ready_event = self._enqueue_staging_to_slot(
                 slot,
                 staging_gate_up,
@@ -1160,8 +1433,15 @@ class ExpertSlotCache:
                 ticket.ready_event = ready_event
                 ticket.transfer_enqueued.set()
                 self._condition.notify_all()
+            if timeline_claimed:
+                cuda_timeline.commit_transfer(ticket, started_event, ready_event)
             return True
         except Exception as exc:  # noqa: BLE001 - CUDA worker boundary
+            if timeline_claimed:
+                cuda_timeline.cancel_transfer(
+                    ticket,
+                    f"worker H2D enqueue failed: {exc}",
+                )
             self._fail_transfer(ticket, exc)
             return False
 
@@ -1202,6 +1482,11 @@ class ExpertSlotCache:
                         self._staging_down[stage_index],
                     )
                 except Exception as exc:  # noqa: BLE001 - worker transports failures
+                    if ticket.cuda_timeline is not None:
+                        ticket.cuda_timeline.cancel_transfer(
+                            ticket,
+                            f"worker expert read failed: {exc}",
+                        )
                     elapsed = time.perf_counter() - started
                     with self._condition:
                         ticket.error = exc
@@ -1348,7 +1633,26 @@ class ExpertSlotCache:
                 len(self._pending_by_key),
             )
 
-        self._enqueue_ticket(ticket, rollback_request=account_request)
+        # Register the ticket while it is still private to this submitter.
+        # `_enqueue_ticket()` is the first point at which the persistent I/O
+        # worker can observe it, so moving this below the queue put would let a
+        # worker append an unowned H2D span during capture close.
+        cuda_timeline = ticket.cuda_timeline
+        if cuda_timeline is not None and not cuda_timeline.reserve_transfer(ticket):
+            # Instrumentation must not make the actual cache request fail.
+            # The capture is already marked incomplete; detach the ticket so a
+            # later normal transfer cannot try to record into a closed scope.
+            ticket.cuda_timeline = None
+            cuda_timeline = None
+        try:
+            self._enqueue_ticket(ticket, rollback_request=account_request)
+        except Exception:
+            if cuda_timeline is not None:
+                cuda_timeline.cancel_transfer(
+                    ticket,
+                    "an async ticket could not enter the I/O worker queue",
+                )
+            raise
         return ticket
 
     def _enqueue_ticket(
@@ -1381,6 +1685,11 @@ class ExpertSlotCache:
                 ticket.storage_done.set()
                 ticket.completed.set()
                 self._condition.notify_all()
+            if ticket.cuda_timeline is not None:
+                ticket.cuda_timeline.cancel_transfer(
+                    ticket,
+                    "an async ticket was rejected before worker admission",
+                )
             raise error from exc
 
     def _wait_for_storage(self, ticket: ExpertLoadTicket) -> None:
@@ -1662,7 +1971,7 @@ class ExpertSlotCache:
             raise RuntimeError("CUDA transfer stream is unavailable")
         started = torch.cuda.Event(enable_timing=True)
         ready = torch.cuda.Event(enable_timing=True)
-        with torch.cuda.stream(stream):
+        with self._transfer_submit_lock, torch.cuda.stream(stream):
             for event in wait_events:
                 stream.wait_event(event)
             started.record(stream)
@@ -1719,6 +2028,15 @@ class ExpertSlotCache:
         self._condition.notify_all()
 
     def _fail_transfer(self, ticket: ExpertLoadTicket, error: Exception) -> None:
+        if ticket.cuda_timeline is not None:
+            ticket.cuda_timeline.cancel_transfer(
+                ticket,
+                f"async H2D failed: {error}",
+            )
+            # An event pair may already have been committed before a later
+            # readiness/query failure reaches this boundary.  Preserve the
+            # fail-closed contract in that case too.
+            ticket.cuda_timeline.invalidate(f"async H2D failed: {error}")
         if self.device.type == "cuda" and self._transfer_stream is not None:
             try:
                 self._transfer_stream.synchronize()
@@ -1824,6 +2142,7 @@ class ExpertSlotCache:
         _use_stream: Any | None,
     ) -> None:
         wait_events: list[Any] = []
+        cuda_timeline = ticket.cuda_timeline
         while True:
             self._poll_transfer_completions()
             with self._condition:
@@ -1845,10 +2164,6 @@ class ExpertSlotCache:
                 # Selection and claim happen under one condition critical
                 # section.  The I/O worker cannot reserve this empty slot in
                 # the former select-to-enqueue gap.
-                if ticket.cuda_timeline is not None and self.device.type == "cuda":
-                    if self._transfer_stream is None:  # pragma: no cover - invariant
-                        raise RuntimeError("CUDA transfer stream is unavailable")
-                    ticket.cuda_timeline.wait_on_origin(self._transfer_stream)
                 evicted_key = self._slot_to_key[slot]
                 # A failed transfer can have already removed the logical key
                 # while a previously leased compute stream is still using the
@@ -1879,8 +2194,19 @@ class ExpertSlotCache:
                 break
 
         transfer_started = time.perf_counter()
+        timeline_claimed = False
         try:
             if self.device.type == "cuda":
+                if cuda_timeline is not None:
+                    timeline_claimed = cuda_timeline.claim_transfer(ticket)
+                    if timeline_claimed:
+                        if (
+                            self._transfer_stream is None
+                        ):  # pragma: no cover - invariant
+                            raise RuntimeError("CUDA transfer stream is unavailable")
+                        # Submit the origin dependency under the same transfer
+                        # lock as timing/copy events, including demand fallback.
+                        wait_events.append(cuda_timeline.origin_event)
                 started_event, ready_event = self._enqueue_staging_to_slot(
                     slot,
                     staging_gate_up,
@@ -1892,12 +2218,8 @@ class ExpertSlotCache:
                     ticket.ready_event = ready_event
                     ticket.transfer_enqueued.set()
                     self._condition.notify_all()
-                if ticket.cuda_timeline is not None:
-                    ticket.cuda_timeline.record_transfer(
-                        ticket.key,
-                        started_event,
-                        ready_event,
-                    )
+                if timeline_claimed:
+                    cuda_timeline.commit_transfer(ticket, started_event, ready_event)
             else:
                 self._copy_staging_to_slot(slot, staging_gate_up, staging_down)
                 with self._condition:
@@ -1907,6 +2229,11 @@ class ExpertSlotCache:
                     self._complete_transfer_locked(ticket)
                     ticket.transfer_enqueued.set()
         except Exception as exc:  # noqa: BLE001 - transactional rollback
+            if timeline_claimed:
+                cuda_timeline.cancel_transfer(
+                    ticket,
+                    f"demand H2D enqueue failed: {exc}",
+                )
             self._fail_transfer(ticket, exc)
             self._raise_ticket_error(ticket)
 
@@ -2340,6 +2667,10 @@ class PagedExpertRuntime:
                 raise RuntimeError("CUDA timeline capture requires a CUDA runtime")
             if self._active_cuda_timeline is not None:
                 raise RuntimeError("a CUDA timeline capture is already active")
+            # A capture owns one origin and one finite worker ledger.  Drain
+            # work submitted before the scope so a prior lookahead cannot
+            # enqueue an unrelated H2D into this call's evidence window.
+            self.cache.wait_idle()
             capture = _CudaTimelineCapture(self.cache.device)
             capture.begin(torch.cuda.current_stream(self.cache.device))
             self._active_cuda_timeline = capture

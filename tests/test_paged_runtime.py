@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import torch
@@ -17,10 +18,12 @@ except ImportError:
 if torch is not None:
     from moevm.paged_runtime import (
         CachePolicy,
+        ExpertLoadTicket,
         ExpertSlotCache,
         PagedExpertRuntime,
         SafetensorExpertStore,
         _cuda_timeline_payload,
+        _CudaTimelineCapture,
         _CudaTimelineEventSpan,
         attach_transformers_olmoe_runtime,
         load_non_expert_weights_into_meta_model,
@@ -166,6 +169,210 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["spans"][0]["name"], "h2d:0:L0:E1")
         self.assertEqual(payload["spans"][1]["name"], "expert_compute:1:L0:E2")
         self.assertEqual(payload["summary"]["overlap"]["duration_ms"], 2.0)
+
+    def test_cuda_timeline_close_waits_for_worker_commit_and_seals_spans(self) -> None:
+        class FakeEvent:
+            next_timestamp_ms = 0.0
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.timestamp_ms = FakeEvent.next_timestamp_ms
+                FakeEvent.next_timestamp_ms += 1.0
+
+            def record(self, _stream: object) -> None:
+                return None
+
+            def query(self) -> bool:
+                return True
+
+            def elapsed_time(self, event: FakeEvent) -> float:
+                return event.timestamp_ms - self.timestamp_ms
+
+        class FakeStream:
+            def __init__(self) -> None:
+                self.waited_for: list[FakeEvent] = []
+
+            def wait_event(self, event: FakeEvent) -> None:
+                self.waited_for.append(event)
+
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch("moevm.paged_runtime.torch.cuda.synchronize"),
+        ):
+            capture = _CudaTimelineCapture(torch.device("cuda"))
+            stream = FakeStream()
+            capture.begin(stream)
+            ticket = ExpertLoadTicket(
+                key=ExpertKey(0, 0),
+                queued_at=time.perf_counter(),
+                request_clock=0,
+            )
+            self.assertTrue(capture.reserve_transfer(ticket))
+
+            claimed = threading.Event()
+            release_worker = threading.Event()
+            finished = threading.Event()
+            worker_errors: list[Exception] = []
+            result: list[dict[str, object]] = []
+
+            def worker() -> None:
+                try:
+                    self.assertTrue(capture.claim_transfer(ticket))
+                    claimed.set()
+                    if not release_worker.wait(timeout=2.0):
+                        raise TimeoutError("test did not release CUDA worker")
+                    capture.wait_on_origin(stream)
+                    started = FakeEvent()
+                    ended = FakeEvent()
+                    self.assertTrue(capture.commit_transfer(ticket, started, ended))
+                except Exception as exc:  # noqa: BLE001 - asserted below
+                    worker_errors.append(exc)
+
+            def close_capture() -> None:
+                try:
+                    result.append(capture.finish())
+                except Exception as exc:  # noqa: BLE001 - asserted below
+                    worker_errors.append(exc)
+                finally:
+                    finished.set()
+
+            worker_thread = threading.Thread(target=worker)
+            closer_thread = threading.Thread(target=close_capture)
+            worker_thread.start()
+            self.assertTrue(claimed.wait(timeout=1.0))
+            closer_thread.start()
+            try:
+                self.assertFalse(finished.wait(timeout=0.1))
+            finally:
+                release_worker.set()
+                worker_thread.join(timeout=2.0)
+                closer_thread.join(timeout=2.0)
+
+            self.assertFalse(worker_thread.is_alive())
+            self.assertFalse(closer_thread.is_alive())
+            self.assertFalse(worker_errors)
+            self.assertEqual(len(result), 1)
+            self.assertTrue(result[0]["complete"])
+            self.assertEqual(len(result[0]["spans"]), 1)
+            self.assertEqual(len(stream.waited_for), 1)
+
+            # Capture close freezes the append-only trace.  A worker that did
+            # not claim before close cannot add a later H2D span.
+            late_ticket = ExpertLoadTicket(
+                key=ExpertKey(0, 1),
+                queued_at=time.perf_counter(),
+                request_clock=0,
+            )
+            self.assertFalse(capture.claim_transfer(late_ticket))
+            self.assertEqual(len(capture._spans), 1)
+
+    def test_cuda_timeline_cancelled_worker_reservation_is_incomplete(self) -> None:
+        class FakeEvent:
+            def __init__(self, **_kwargs: object) -> None:
+                self.timestamp_ms = 0.0
+
+            def record(self, _stream: object) -> None:
+                return None
+
+            def query(self) -> bool:
+                return True
+
+            def elapsed_time(self, event: FakeEvent) -> float:
+                return event.timestamp_ms - self.timestamp_ms
+
+        class FakeStream:
+            def wait_event(self, _event: FakeEvent) -> None:
+                return None
+
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch("moevm.paged_runtime.torch.cuda.synchronize"),
+        ):
+            capture = _CudaTimelineCapture(torch.device("cuda"))
+            capture.begin(FakeStream())
+            ticket = ExpertLoadTicket(
+                key=ExpertKey(0, 0),
+                queued_at=time.perf_counter(),
+                request_clock=0,
+            )
+            self.assertTrue(capture.reserve_transfer(ticket))
+
+            result = capture.finish()
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("cancelled", str(result["reason"]))
+        self.assertEqual(result["spans"], [])
+
+    def test_shared_transfer_stream_submissions_do_not_interleave(self) -> None:
+        """A worker and foreground H2D keep complete event pairs contiguous."""
+
+        class FakeEvent:
+            def __init__(self, **_kwargs: object) -> None:
+                return None
+
+            def record(self, _stream: object) -> None:
+                return None
+
+        class FakeStream:
+            def wait_event(self, _event: FakeEvent) -> None:
+                return None
+
+            def synchronize(self) -> None:
+                return None
+
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        submissions: list[str] = []
+
+        class FakeStreamScope:
+            def __enter__(self) -> None:
+                name = threading.current_thread().name
+                submissions.append(name)
+                if name == "first-transfer":
+                    first_entered.set()
+                    if not release_first.wait(timeout=2.0):
+                        raise TimeoutError("test did not release first H2D submission")
+                else:
+                    second_entered.set()
+
+            def __exit__(self, *_args: object) -> bool:
+                return False
+
+        cache = self._cache(2, staging_slots=2, pipeline_mode="async")
+        self.addCleanup(cache.close)
+        cache._transfer_stream = FakeStream()
+
+        def submit(slot: int) -> None:
+            cache._enqueue_staging_to_slot(
+                slot,
+                cache._staging_gate_up[slot],
+                cache._staging_down[slot],
+                (),
+            )
+
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch(
+                "moevm.paged_runtime.torch.cuda.stream",
+                side_effect=lambda _stream: FakeStreamScope(),
+            ),
+        ):
+            first = threading.Thread(target=submit, args=(0,), name="first-transfer")
+            second = threading.Thread(target=submit, args=(1,), name="second-transfer")
+            first.start()
+            self.assertTrue(first_entered.wait(timeout=1.0))
+            second.start()
+            try:
+                self.assertFalse(second_entered.wait(timeout=0.1))
+            finally:
+                release_first.set()
+                first.join(timeout=2.0)
+                second.join(timeout=2.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(submissions, ["first-transfer", "second-transfer"])
 
     def test_cuda_timeline_scope_serializes_one_runtime_for_its_full_lifetime(
         self,
@@ -2048,6 +2255,76 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(cache._slot_reservation, [None])
         self.assertEqual(cache._slot_to_key, [None])
         self.assertEqual(cache._stage_state, ["free"])
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_capture_drains_prior_worker_work_before_origin(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        prior_ticket = cache._submit_lookahead(ExpertKey(0, 0))
+        self.assertTrue(prior_ticket.storage_done.wait(timeout=2.0))
+        self.assertTrue(prior_ticket.transfer_enqueued.wait(timeout=2.0))
+
+        with runtime.cuda_timeline_capture() as capture:
+            # The scope itself needs no forward: entering it must first drain
+            # the prior worker ticket so its H2D cannot enter this origin.
+            pass
+
+        self.assertIsNotNone(capture.result)
+        self.assertTrue(capture.result["complete"])
+        self.assertEqual(cache._pending_by_key, {})
+        self.assertEqual(cache._stage_state, ["free"])
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_capture_supports_proactive_worker_h2d(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        worker_enqueued_h2d = threading.Event()
+        original_enqueue = cache._enqueue_staging_to_slot
+
+        def observe_enqueue(*args, **kwargs):
+            if threading.current_thread().name == "moevm-expert-io":
+                worker_enqueued_h2d.set()
+            return original_enqueue(*args, **kwargs)
+
+        cache._enqueue_staging_to_slot = observe_enqueue  # type: ignore[method-assign]
+        try:
+            with runtime.cuda_timeline_capture() as capture:
+                ticket = cache._submit_lookahead(
+                    ExpertKey(0, 0),
+                    cuda_timeline=capture,
+                )
+                self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+                self.assertTrue(worker_enqueued_h2d.wait(timeout=2.0))
+                self.assertTrue(ticket.transfer_enqueued.wait(timeout=2.0))
+                # Capture instrumentation must not publish the speculative
+                # slot before a real demand accounts for it.
+                self.assertEqual(cache.resident_keys, ())
+                self.assertTrue(ticket.reservation_active)
+        finally:
+            cache._enqueue_staging_to_slot = original_enqueue  # type: ignore[method-assign]
+
+        self.assertIsNotNone(capture.result)
+        timeline = capture.result
+        self.assertTrue(timeline["complete"])
+        self.assertTrue(any(span["lane"] == "h2d" for span in timeline["spans"]))
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

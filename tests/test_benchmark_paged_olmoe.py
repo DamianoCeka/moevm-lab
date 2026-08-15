@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 try:
@@ -41,6 +42,60 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
+
+    @staticmethod
+    def _cuda_timeline(
+        *,
+        h2d: tuple[tuple[float, float], ...],
+        compute: tuple[tuple[float, float], ...],
+        status: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        spans: list[dict[str, Any]] = []
+        transfers = []
+        kernels = []
+        sequence = 0
+        for lane, ranges, intervals in (
+            ("h2d", h2d, transfers),
+            ("expert_compute", compute, kernels),
+        ):
+            for expert, (start_ms, end_ms) in enumerate(ranges):
+                name = f"{lane}:{sequence}:L0:E{expert}"
+                spans.append(
+                    {
+                        "lane": lane,
+                        "name": name,
+                        "sequence": sequence,
+                        "layer": 0,
+                        "expert": expert,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "duration_ms": end_ms - start_ms,
+                    }
+                )
+                intervals.append(_HARNESS.CudaInterval(name, start_ms, end_ms))
+                sequence += 1
+        summary = _HARNESS.summarize_cuda_timeline(
+            transfers=transfers,
+            compute=kernels,
+        )
+        summary.pop("intervals")
+        resolved_status = status or (
+            "measured" if h2d and compute else "not_applicable"
+        )
+        if resolved_status == "not_applicable" and reason is None:
+            reason = "one CUDA event lane was not observed in this model call"
+        return {
+            "schema_version": 1,
+            "complete": True,
+            "status": resolved_status,
+            "method": "cuda_events_v1",
+            "scope": "paged_expert_h2d_vs_expert_compute",
+            "unit": "milliseconds",
+            "reason": reason,
+            "spans": spans,
+            "summary": summary,
+        }
 
     def _args(self, *extra: str) -> argparse.Namespace:
         return _HARNESS.build_parser().parse_args(
@@ -372,53 +427,15 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             _HARNESS._write_json_create_only(output, {"status": "replacement"})
 
     def test_cuda_overlap_aggregation_keeps_model_call_origins_separate(self) -> None:
-        def capture(
-            *,
-            status: str,
-            transfer_count: int,
-            transfer_ms: float,
-            compute_count: int,
-            compute_ms: float,
-            overlap_ms: float,
-            reason: str | None = None,
-        ) -> dict[str, object]:
-            return {
-                "complete": True,
-                "status": status,
-                "reason": reason,
-                "summary": {
-                    "transfer": {
-                        "interval_count": transfer_count,
-                        "active_duration_ms": transfer_ms,
-                    },
-                    "compute": {
-                        "interval_count": compute_count,
-                        "active_duration_ms": compute_ms,
-                    },
-                    "overlap": {
-                        "duration_ms": overlap_ms,
-                        "active_duration_saved_by_overlap_ms": overlap_ms,
-                    },
-                },
-            }
-
         result = _HARNESS._aggregate_cuda_overlap(
             [
-                capture(
-                    status="measured",
-                    transfer_count=2,
-                    transfer_ms=4.0,
-                    compute_count=2,
-                    compute_ms=6.0,
-                    overlap_ms=2.0,
+                self._cuda_timeline(
+                    h2d=((0.0, 2.0), (2.0, 4.0)),
+                    compute=((1.0, 3.0), (4.0, 8.0)),
                 ),
-                capture(
-                    status="not_applicable",
-                    transfer_count=0,
-                    transfer_ms=0.0,
-                    compute_count=1,
-                    compute_ms=3.0,
-                    overlap_ms=0.0,
+                self._cuda_timeline(
+                    h2d=(),
+                    compute=((0.0, 3.0),),
                     reason="no expert H2D intervals were observed in this model call",
                 ),
             ]
@@ -437,13 +454,9 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
         unavailable = _HARNESS._aggregate_cuda_overlap(
             [
-                capture(
-                    status="not_applicable",
-                    transfer_count=0,
-                    transfer_ms=0.0,
-                    compute_count=2,
-                    compute_ms=4.0,
-                    overlap_ms=0.0,
+                self._cuda_timeline(
+                    h2d=(),
+                    compute=((0.0, 2.0), (2.0, 4.0)),
                     reason="no expert H2D intervals were observed in this model call",
                 )
             ]
@@ -454,13 +467,9 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         long_capture_durations = [1000.0, *([0.1] * 64)]
         long_result = _HARNESS._aggregate_cuda_overlap(
             [
-                capture(
-                    status="measured",
-                    transfer_count=1,
-                    transfer_ms=duration,
-                    compute_count=1,
-                    compute_ms=duration,
-                    overlap_ms=duration,
+                self._cuda_timeline(
+                    h2d=((0.0, duration),),
+                    compute=((0.0, duration),),
                 )
                 for duration in long_capture_durations
             ]
@@ -469,6 +478,46 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             long_result["h2d_union_ms"],
             math.fsum(long_capture_durations),
         )
+
+    def test_cuda_overlap_aggregation_rejects_incomplete_or_tampered_call(self) -> None:
+        mutators = {
+            "incomplete": lambda call: call.__setitem__("complete", False),
+            "unknown status": lambda call: call.__setitem__("status", "partial"),
+            "duplicate sequence": lambda call: call["spans"][1].__setitem__(
+                "sequence", call["spans"][0]["sequence"]
+            ),
+            "summary boolean count": lambda call: call["summary"][
+                "transfer"
+            ].__setitem__("interval_count", True),
+        }
+        for name, mutate in mutators.items():
+            with self.subTest(name=name):
+                call = self._cuda_timeline(
+                    h2d=((0.0, 2.0),),
+                    compute=((1.0, 3.0),),
+                )
+                mutate(call)
+                with self.assertRaises(RuntimeError):
+                    _HARNESS._aggregate_cuda_overlap([call])
+
+    def test_cuda_overlap_aggregation_accepts_worker_compatible_span_metadata(
+        self,
+    ) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call["capture_mode"] = "worker_aware"
+        for span, sequence in zip(call["spans"], (4, 9), strict=True):
+            span["sequence"] = sequence
+            span["name"] = (
+                f"{span['lane']}:{sequence}:L{span['layer']}:E{span['expert']}"
+            )
+
+        aggregate = _HARNESS._aggregate_cuda_overlap([call])
+
+        self.assertEqual(aggregate["status"], "measured")
+        self.assertEqual(aggregate["overlap_ms"], 1.0)
 
     def test_oom_classifier_is_narrow(self) -> None:
         self.assertTrue(_HARNESS._is_cuda_oom(RuntimeError("CUDA out of memory")))
@@ -530,22 +579,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             transfer_seconds=0.0,
             forward_seconds=0.0,
         )
-        call_timeline = {
-            "complete": True,
-            "status": "measured",
-            "method": "cuda_events_v1",
-            "scope": "paged_expert_h2d_vs_expert_compute",
-            "unit": "milliseconds",
-            "reason": None,
-            "summary": {
-                "transfer": {"interval_count": 1, "active_duration_ms": 4.0},
-                "compute": {"interval_count": 1, "active_duration_ms": 5.0},
-                "overlap": {
-                    "duration_ms": 2.0,
-                    "active_duration_saved_by_overlap_ms": 2.0,
-                },
-            },
-        }
+        call_timeline = self._cuda_timeline(
+            h2d=((0.0, 4.0),),
+            compute=((2.0, 7.0),),
+        )
 
         class Capture:
             result = call_timeline

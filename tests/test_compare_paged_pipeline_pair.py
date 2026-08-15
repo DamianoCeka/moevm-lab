@@ -257,14 +257,20 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             call["summary"]["compute"]["active_duration_ms"] for call in calls
         )
         overlap = sum(call["summary"]["overlap"]["duration_ms"] for call in calls)
+        measured_calls = sum(call["status"] == "measured" for call in calls)
+        reasons: list[str] = []
+        for call in calls:
+            reason = call["reason"]
+            if reason is not None and reason not in reasons:
+                reasons.append(reason)
         return {
             "schema_version": 1,
-            "status": "measured",
+            "status": "measured" if measured_calls else "not_applicable",
             "method": "cuda_events_v1",
             "scope": "paged_expert_h2d_vs_expert_compute",
             "unit": "milliseconds",
             "model_call_count": len(calls),
-            "measured_model_call_count": len(calls),
+            "measured_model_call_count": measured_calls,
             "h2d_interval_count": sum(
                 call["summary"]["transfer"]["interval_count"] for call in calls
             ),
@@ -274,13 +280,46 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             "h2d_union_ms": h2d_active,
             "expert_compute_union_ms": compute_active,
             "overlap_ms": overlap,
-            "h2d_overlap_fraction": overlap / h2d_active,
-            "expert_compute_overlap_fraction": overlap / compute_active,
+            "h2d_overlap_fraction": (overlap / h2d_active if h2d_active else None),
+            "expert_compute_overlap_fraction": (
+                overlap / compute_active if compute_active else None
+            ),
             "h2d_hidden_by_compute_ms": overlap,
             "h2d_exposed_ms": h2d_active - overlap,
             "active_duration_saved_by_overlap_ms": overlap,
-            "reason": None,
-            "aggregation": "Summed independent model calls.",
+            "reason": None if measured_calls else "; ".join(reasons),
+            "aggregation": _COMPARATOR._CUDA_TIMELINE_AGGREGATION,
+        }
+
+    @staticmethod
+    def _not_applicable_cuda_timeline() -> dict[str, Any]:
+        spans = [
+            {
+                "lane": "expert_compute",
+                "name": "expert_compute:0:L0:E2",
+                "sequence": 0,
+                "layer": 0,
+                "expert": 2,
+                "start_ms": 1.0,
+                "end_ms": 3.0,
+                "duration_ms": 2.0,
+            }
+        ]
+        summary = _COMPARATOR.summarize_cuda_timeline(
+            transfers=[],
+            compute=[_COMPARATOR.CudaInterval("expert_compute:0:L0:E2", 1.0, 3.0)],
+        )
+        summary.pop("intervals")
+        return {
+            "schema_version": 1,
+            "status": "not_applicable",
+            "method": "cuda_events_v1",
+            "scope": "paged_expert_h2d_vs_expert_compute",
+            "unit": "milliseconds",
+            "complete": True,
+            "reason": "no expert H2D intervals were observed in this model call",
+            "spans": spans,
+            "summary": summary,
         }
 
     def _with_cuda_telemetry(self, report: dict[str, Any]) -> dict[str, Any]:
@@ -362,9 +401,26 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         result = _COMPARATOR.compare_reports(sync, async_)
 
         self.assertEqual(result["status"], "ok")
-        del async_["passes"]["cold_expert_cache"]["cuda_overlap"]
-        with self.assertRaisesRegex(ValueError, "cuda_overlap must be an object"):
-            _COMPARATOR.compare_reports(sync, async_)
+        mutators: dict[str, Callable[[dict[str, Any]], None]] = {
+            "prefill": lambda row: row["passes"]["cold_expert_cache"]["prefill"].pop(
+                "cuda_event_timeline"
+            ),
+            "first token": lambda row: row["passes"]["cold_expert_cache"][
+                "first_token"
+            ].pop("cuda_event_timeline"),
+            "decode": lambda row: row["passes"]["cold_expert_cache"]["decode"][
+                "per_token"
+            ][0].pop("cuda_event_timeline"),
+            "aggregate": lambda row: row["passes"]["cold_expert_cache"].pop(
+                "cuda_overlap"
+            ),
+        }
+        for name, mutate in mutators.items():
+            with self.subTest(name=name):
+                broken = self._with_cuda_telemetry(self._report("async"))
+                mutate(broken)
+                with self.assertRaises(ValueError):
+                    _COMPARATOR.compare_reports(sync, broken)
 
     def test_requested_cuda_telemetry_rejects_incomplete_or_tampered_data(self) -> None:
         mutators: dict[str, Callable[[dict[str, Any]], None]] = {
@@ -377,6 +433,19 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             "aggregate mismatch": lambda row: row["passes"]["cold_expert_cache"][
                 "cuda_overlap"
             ].__setitem__("overlap_ms", 99.0),
+            "summary boolean count": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ]["cuda_event_timeline"]["summary"]["transfer"].__setitem__(
+                "interval_count", True
+            ),
+            "duplicate sequence": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ]["cuda_event_timeline"]["spans"][1].update(
+                {"sequence": 0, "name": "expert_compute:0:L0:E2"}
+            ),
+            "invalid aggregation": lambda row: row["passes"]["cold_expert_cache"][
+                "cuda_overlap"
+            ].__setitem__("aggregation", "combined all calls into one timeline"),
         }
         sync = self._with_cuda_telemetry(self._report("sync"))
         for name, mutate in mutators.items():
@@ -385,6 +454,78 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
                 mutate(async_)
                 with self.assertRaises(ValueError):
                     _COMPARATOR.compare_reports(sync, async_)
+
+    def test_requested_cuda_telemetry_accepts_complete_not_applicable_calls(
+        self,
+    ) -> None:
+        sync = self._with_cuda_telemetry(self._report("sync"))
+        async_ = self._with_cuda_telemetry(self._report("async"))
+        for report in (sync, async_):
+            for pass_payload in report["passes"].values():
+                not_applicable = self._not_applicable_cuda_timeline()
+                pass_payload["decode"]["per_token"][0]["cuda_event_timeline"] = (
+                    not_applicable
+                )
+                prefill = pass_payload["prefill"]["cuda_event_timeline"]
+                pass_payload["cuda_overlap"] = self._cuda_overlap(
+                    [prefill, not_applicable]
+                )
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
+    def test_requested_cuda_telemetry_accepts_worker_compatible_span_metadata(
+        self,
+    ) -> None:
+        sync = self._with_cuda_telemetry(self._report("sync"))
+        async_ = self._with_cuda_telemetry(self._report("async"))
+        for report in (sync, async_):
+            for pass_payload in report["passes"].values():
+                timelines = (
+                    pass_payload["prefill"]["cuda_event_timeline"],
+                    pass_payload["first_token"]["cuda_event_timeline"],
+                    pass_payload["decode"]["per_token"][0]["cuda_event_timeline"],
+                )
+                for timeline in timelines:
+                    timeline["capture_mode"] = "worker_aware"
+                    for span, sequence in zip(
+                        timeline["spans"],
+                        (4, 9),
+                        strict=True,
+                    ):
+                        span["sequence"] = sequence
+                        span["name"] = (
+                            f"{span['lane']}:{sequence}:L{span['layer']}:"
+                            f"E{span['expert']}"
+                        )
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
+    def test_not_applicable_aggregate_reason_must_be_derived_from_calls(self) -> None:
+        sync = self._with_cuda_telemetry(self._report("sync"))
+        async_ = self._with_cuda_telemetry(self._report("async"))
+        for report in (sync, async_):
+            for pass_payload in report["passes"].values():
+                prefill = self._not_applicable_cuda_timeline()
+                decode = self._not_applicable_cuda_timeline()
+                pass_payload["prefill"]["cuda_event_timeline"] = prefill
+                pass_payload["first_token"]["cuda_event_timeline"] = copy.deepcopy(
+                    prefill
+                )
+                pass_payload["decode"]["per_token"][0]["cuda_event_timeline"] = decode
+                pass_payload["cuda_overlap"] = self._cuda_overlap([prefill, decode])
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+        async_["passes"]["cold_expert_cache"]["cuda_overlap"]["reason"] = (
+            "unrelated reason"
+        )
+        with self.assertRaisesRegex(ValueError, "reason is inconsistent"):
+            _COMPARATOR.compare_reports(sync, async_)
 
     def test_tampered_identity_tokens_and_metrics_are_rejected(self) -> None:
         mutators: dict[str, Callable[[dict[str, Any]], None]] = {

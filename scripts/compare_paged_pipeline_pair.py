@@ -83,6 +83,10 @@ _CUDA_TIMELINE_METHOD = "cuda_events_v1"
 _CUDA_TIMELINE_SCOPE = "paged_expert_h2d_vs_expert_compute"
 _CUDA_TIMELINE_UNIT = "milliseconds"
 _CUDA_TIMELINE_SCHEMA_VERSION = 1
+_CUDA_TIMELINE_AGGREGATION = (
+    "Summed per-model-call CUDA-event lane summaries; timestamps from different "
+    "model calls are not unioned."
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -181,7 +185,41 @@ def _cuda_overlap_requested(runtime: dict[str, Any], mode: str) -> bool:
     return requested
 
 
-def _timeline_span(raw: object, name: str) -> tuple[str, CudaInterval]:
+def _timeline_summary_equal(actual: object, expected: object) -> bool:
+    """Compare derived JSON values without accepting bools as integer counts."""
+
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or actual.keys() != expected.keys():
+            return False
+        return all(
+            _timeline_summary_equal(actual[key], expected[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _timeline_summary_equal(left, right)
+                for left, right in zip(actual, expected, strict=True)
+            )
+        )
+    if isinstance(expected, float):
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, (int, float))
+            and math.isfinite(float(actual))
+            and float(actual) == expected
+        )
+    if isinstance(expected, int):
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, int)
+            and actual == expected
+        )
+    return type(actual) is type(expected) and actual == expected
+
+
+def _timeline_span(raw: object, name: str) -> tuple[str, int, CudaInterval]:
     span = _mapping(raw, name)
     lane = span.get("lane")
     if lane not in {"h2d", "expert_compute"}:
@@ -200,16 +238,23 @@ def _timeline_span(raw: object, name: str) -> tuple[str, CudaInterval]:
     duration_ms = _number(span.get("duration_ms"), f"{name}.duration_ms")
     if not math.isclose(duration_ms, end_ms - start_ms, rel_tol=0.0, abs_tol=1e-12):
         raise ValueError(f"{name}.duration_ms is inconsistent with its endpoints")
-    return lane, CudaInterval(
-        name=expected_name,
-        start_ms=start_ms,
-        end_ms=end_ms,
+    return (
+        lane,
+        sequence,
+        CudaInterval(
+            name=expected_name,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        ),
     )
 
 
 def _timeline_call(raw: object, name: str) -> dict[str, Any]:
     timeline = _mapping(raw, name)
-    if timeline.get("schema_version") != _CUDA_TIMELINE_SCHEMA_VERSION:
+    if (
+        _integer(timeline.get("schema_version"), f"{name}.schema_version")
+        != _CUDA_TIMELINE_SCHEMA_VERSION
+    ):
         raise ValueError(f"{name}.schema_version must be 1")
     if timeline.get("complete") is not True:
         raise ValueError(f"{name} must be complete")
@@ -227,8 +272,12 @@ def _timeline_call(raw: object, name: str) -> dict[str, Any]:
         raise ValueError(f"{name}.spans must be an array")
     transfers: list[CudaInterval] = []
     compute: list[CudaInterval] = []
+    sequences: set[int] = set()
     for index, raw_span in enumerate(raw_spans):
-        lane, interval = _timeline_span(raw_span, f"{name}.spans[{index}]")
+        lane, sequence, interval = _timeline_span(raw_span, f"{name}.spans[{index}]")
+        if sequence in sequences:
+            raise ValueError(f"{name}.spans[{index}].sequence must be unique")
+        sequences.add(sequence)
         if lane == "h2d":
             transfers.append(interval)
         else:
@@ -239,7 +288,7 @@ def _timeline_call(raw: object, name: str) -> dict[str, Any]:
         compute=compute,
     )
     expected_summary.pop("intervals")
-    if timeline.get("summary") != expected_summary:
+    if not _timeline_summary_equal(timeline.get("summary"), expected_summary):
         raise ValueError(f"{name}.summary is not derived from its raw spans")
 
     has_both_lanes = bool(transfers) and bool(compute)
@@ -257,6 +306,7 @@ def _timeline_call(raw: object, name: str) -> dict[str, Any]:
     return {
         "status": status,
         "summary": expected_summary,
+        "reason": reason,
     }
 
 
@@ -287,8 +337,13 @@ def _pass_cuda_overlap(
     calls: list[dict[str, Any]],
     name: str,
 ) -> None:
+    if not calls:
+        raise ValueError(f"{name} requires at least one model-call timeline")
     aggregate = _mapping(raw, name)
-    if aggregate.get("schema_version") != _CUDA_TIMELINE_SCHEMA_VERSION:
+    if (
+        _integer(aggregate.get("schema_version"), f"{name}.schema_version")
+        != _CUDA_TIMELINE_SCHEMA_VERSION
+    ):
         raise ValueError(f"{name}.schema_version must be 1")
     if aggregate.get("method") != _CUDA_TIMELINE_METHOD:
         raise ValueError(f"{name}.method is invalid")
@@ -296,6 +351,8 @@ def _pass_cuda_overlap(
         raise ValueError(f"{name}.scope is invalid")
     if aggregate.get("unit") != _CUDA_TIMELINE_UNIT:
         raise ValueError(f"{name}.unit is invalid")
+    if aggregate.get("aggregation") != _CUDA_TIMELINE_AGGREGATION:
+        raise ValueError(f"{name}.aggregation is invalid")
 
     expected_h2d_intervals = sum(
         int(call["summary"]["transfer"]["interval_count"]) for call in calls
@@ -318,6 +375,12 @@ def _pass_cuda_overlap(
     )
     measured_calls = sum(call["status"] == "measured" for call in calls)
     expected_status = "measured" if measured_calls else "not_applicable"
+    expected_reasons: list[str] = []
+    for call in calls:
+        reason = call["reason"]
+        if reason is not None and reason not in expected_reasons:
+            expected_reasons.append(reason)
+    expected_reason = None if measured_calls else "; ".join(expected_reasons)
 
     for field, expected in (
         ("model_call_count", len(calls)),
@@ -374,10 +437,8 @@ def _pass_cuda_overlap(
     if expected_status == "measured":
         if aggregate.get("reason") is not None:
             raise ValueError(f"{name}.reason must be null when status=measured")
-    elif (
-        not isinstance(aggregate.get("reason"), str) or not aggregate["reason"].strip()
-    ):
-        raise ValueError(f"{name}.reason is required when status=not_applicable")
+    elif aggregate.get("reason") != expected_reason:
+        raise ValueError(f"{name}.reason is inconsistent with model-call timelines")
 
 
 def _validate_cuda_telemetry_pass(
