@@ -109,6 +109,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             _HARNESS._validate_args(self._args("--teacher-force-reference"))
         with self.assertRaisesRegex(ValueError, "at least two staging slots"):
             _HARNESS._validate_args(self._args("--pipeline", "async"))
+        with self.assertRaisesRegex(ValueError, "at least two staging slots"):
+            _HARNESS._validate_args(self._args("--pipeline", "adaptive"))
         async_args = self._args(
             "--pipeline",
             "async",
@@ -117,6 +119,14 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         )
         _HARNESS._validate_args(async_args)
         self.assertEqual(async_args.pipeline, "async")
+        adaptive_args = self._args(
+            "--pipeline",
+            "adaptive",
+            "--staging-slots",
+            "2",
+        )
+        _HARNESS._validate_args(adaptive_args)
+        self.assertEqual(adaptive_args.pipeline, "adaptive")
 
     def test_workload_file_selects_exact_prompt(self) -> None:
         workload_path = self.root / "workloads.json"
@@ -250,6 +260,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=72,
             storage_loads=6,
             transfer_loads=6,
+            adaptive_async_forwards=1,
+            adaptive_sync_forwards=2,
+            adaptive_async_experts=4,
+            adaptive_sync_experts=5,
             pending_loads_peak=1,
             peak_staging_in_use=1,
             storage_seconds=1.0,
@@ -265,6 +279,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=84,
             storage_loads=7,
             transfer_loads=7,
+            adaptive_async_forwards=2,
+            adaptive_sync_forwards=4,
+            adaptive_async_experts=7,
+            adaptive_sync_experts=9,
             pending_loads_peak=2,
             peak_staging_in_use=2,
             storage_seconds=1.5,
@@ -279,6 +297,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(delta["hits"], 3)
         self.assertEqual(delta["misses"], 1)
         self.assertEqual(delta["hit_rate"], 0.75)
+        self.assertEqual(delta["adaptive_async_forwards"], 1)
+        self.assertEqual(delta["adaptive_sync_forwards"], 2)
+        self.assertEqual(delta["adaptive_async_experts"], 3)
+        self.assertEqual(delta["adaptive_sync_experts"], 4)
         self.assertNotIn("pending_loads_peak", delta)
         self.assertNotIn("peak_staging_in_use", delta)
         delta["storage_bytes"] = 13
