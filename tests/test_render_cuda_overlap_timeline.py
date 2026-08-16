@@ -290,8 +290,20 @@ class RenderCudaOverlapTimelineTests(unittest.TestCase):
         timeline = payload["passes"]["cold_expert_cache"]["prefill"][
             "cuda_event_timeline"
         ]
-        timeline["coverage"]["unexpected"] = 0
-        with self.assertRaisesRegex(ValueError, "must contain exactly"):
+        timeline["coverage"]["future_observation"] = "kept for future readers"
+        selected = _RENDERER.select_timeline(
+            payload,
+            pass_name="cold_expert_cache",
+            selection=_RENDERER.parse_call("prefill"),
+        )
+        self.assertEqual(selected.coverage.h2d_span_count, 2)
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        del timeline["coverage"]["h2d_span_count"]
+        with self.assertRaisesRegex(ValueError, "must contain"):
             _RENDERER.select_timeline(
                 payload,
                 pass_name="cold_expert_cache",

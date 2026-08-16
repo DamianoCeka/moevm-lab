@@ -295,9 +295,9 @@ def _timeline_coverage(
 
     coverage = _mapping(timeline.get("coverage"), "cuda_event_timeline.coverage")
     expected_fields = {"cache_transfer_loads_delta", "h2d_span_count"}
-    if set(coverage) != expected_fields:
+    if not expected_fields.issubset(coverage):
         raise ValueError(
-            "cuda_event_timeline.coverage must contain exactly "
+            "cuda_event_timeline.coverage must contain "
             "cache_transfer_loads_delta and h2d_span_count"
         )
     cache_transfer_loads_delta = _nonnegative_integer(
