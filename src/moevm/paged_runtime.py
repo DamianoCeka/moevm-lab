@@ -1624,7 +1624,11 @@ class ExpertSlotCache:
         slot: int,
         *,
         account_request: bool,
+        is_lookahead: bool = False,
     ) -> ExpertLoadTicket:
+        # A resident hit has no H2D to reserve at submit time.  Preserve its
+        # lookahead role, but do not retain a capture that may finish before a
+        # later eviction turns this placeholder into a real queued transfer.
         ticket = ExpertLoadTicket(
             key=key,
             queued_at=time.perf_counter(),
@@ -1633,6 +1637,7 @@ class ExpertSlotCache:
             destination_generation=self._slot_generation[slot],
             state="resident",
             counted_as_hit=account_request,
+            is_lookahead=is_lookahead,
             demanded=account_request,
         )
         ticket.storage_done.set()
@@ -1691,6 +1696,7 @@ class ExpertSlotCache:
                     key,
                     existing_slot,
                     account_request=account_request,
+                    is_lookahead=not account_request,
                 )
             existing_ticket = self._pending_by_key.get(key)
             if existing_ticket is not None:
@@ -1717,6 +1723,26 @@ class ExpertSlotCache:
                 len(self._pending_by_key),
             )
 
+        self._enqueue_ticket_after_timeline_reservation(
+            ticket,
+            rollback_request=account_request,
+        )
+        return ticket
+
+    def _enqueue_ticket_after_timeline_reservation(
+        self,
+        ticket: ExpertLoadTicket,
+        *,
+        rollback_request: bool = False,
+    ) -> None:
+        """Make a queued ticket visible only after its timeline admission.
+
+        A cache-hit placeholder can become a real load after its resident slot
+        is evicted.  Both that stale-resident path and a reclaimed lookahead
+        re-enter the I/O queue here, so they need the same reserve-before-queue
+        rule as a newly submitted ticket.
+        """
+
         # Register the ticket while it is still private to this submitter.
         # `_enqueue_ticket()` is the first point at which the persistent I/O
         # worker can observe it, so moving this below the queue put would let a
@@ -1729,7 +1755,7 @@ class ExpertSlotCache:
             ticket.cuda_timeline = None
             cuda_timeline = None
         try:
-            self._enqueue_ticket(ticket, rollback_request=account_request)
+            self._enqueue_ticket(ticket, rollback_request=rollback_request)
         except Exception:
             if cuda_timeline is not None:
                 cuda_timeline.cancel_transfer(
@@ -1737,7 +1763,6 @@ class ExpertSlotCache:
                     "an async ticket could not enter the I/O worker queue",
                 )
             raise
-        return ticket
 
     def _enqueue_ticket(
         self,
@@ -1796,9 +1821,14 @@ class ExpertSlotCache:
     def _refresh_stale_resident_ticket(
         self,
         ticket: ExpertLoadTicket,
+        *,
+        cuda_timeline: _CudaTimelineCapture | None = None,
     ) -> ExpertLoadTicket:
         if ticket.state == "discarded":
-            return self._requeue_discarded_lookahead(ticket)
+            return self._requeue_discarded_lookahead(
+                ticket,
+                cuda_timeline=cuda_timeline,
+            )
         if ticket.state != "resident":
             return ticket
         with self._condition:
@@ -1839,18 +1869,25 @@ class ExpertSlotCache:
             ticket.transfer_enqueued.clear()
             ticket.reservation_active = False
             ticket.discard_requested = False
+            # A resident placeholder has no transfer of its own.  Associate
+            # it with the *current* capture only after eviction made this a
+            # real requeue; the helper below reserves it before worker
+            # visibility.  Rebinding also drops any completed old scope.
+            ticket.cuda_timeline = cuda_timeline
             ticket.state = "queued"
             self._pending_by_key[ticket.key] = ticket
             self._metrics.pending_loads_peak = max(
                 self._metrics.pending_loads_peak,
                 len(self._pending_by_key),
             )
-        self._enqueue_ticket(ticket)
+        self._enqueue_ticket_after_timeline_reservation(ticket)
         return ticket
 
     def _requeue_discarded_lookahead(
         self,
         ticket: ExpertLoadTicket,
+        *,
+        cuda_timeline: _CudaTimelineCapture | None = None,
     ) -> ExpertLoadTicket:
         """Turn a reclaimed internal lookahead into a fresh real-demand load."""
 
@@ -1876,13 +1913,17 @@ class ExpertSlotCache:
             ticket.transfer_enqueued.clear()
             ticket.reservation_active = False
             ticket.discard_requested = False
+            # A reclaimed lookahead may be demanded during a later model
+            # call.  Bind the currently active scope (or deliberately none),
+            # rather than retaining a capture that has already closed.
+            ticket.cuda_timeline = cuda_timeline
             ticket.state = "queued"
             self._pending_by_key[ticket.key] = ticket
             self._metrics.pending_loads_peak = max(
                 self._metrics.pending_loads_peak,
                 len(self._pending_by_key),
             )
-        self._enqueue_ticket(ticket)
+        self._enqueue_ticket_after_timeline_reservation(ticket)
         return ticket
 
     @property
@@ -2391,10 +2432,14 @@ class ExpertSlotCache:
         compute_stream: Any | None,
         synchronize: bool,
         account_demand: bool = False,
+        cuda_timeline: _CudaTimelineCapture | None = None,
     ) -> _ExpertLease:
         if account_demand:
             self._account_demand(ticket)
-        ticket = self._refresh_stale_resident_ticket(ticket)
+        ticket = self._refresh_stale_resident_ticket(
+            ticket,
+            cuda_timeline=cuda_timeline,
+        )
         self._raise_ticket_error(ticket)
         if ticket.state not in ("resident", "copying"):
             self._wait_for_storage(ticket)
@@ -2894,6 +2939,7 @@ class PagedExpertRuntime:
                         compute_stream=compute_stream,
                         synchronize=False,
                         account_demand=True,
+                        cuda_timeline=cuda_timeline,
                     )
                     weights = lease.weights
                 else:

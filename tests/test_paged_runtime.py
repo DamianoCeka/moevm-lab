@@ -1275,6 +1275,58 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(metrics.storage_bytes, 3 * self.store.spec.size_bytes)
         self.assertEqual(metrics.storage_loads, 3)
 
+    def test_discarded_lookahead_requeue_reserves_timeline_before_enqueue(
+        self,
+    ) -> None:
+        class FakeEvent:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def record(self, _stream: object) -> None:
+                return None
+
+        cache = self._cache(1, staging_slots=1, pipeline_mode="async")
+        self.addCleanup(cache.close)
+        key = ExpertKey(0, 0)
+        ticket = ExpertLoadTicket(
+            key=key,
+            queued_at=time.perf_counter(),
+            request_clock=1,
+            state="discarded",
+            is_lookahead=True,
+            demanded=True,
+        )
+        observed_enqueue = threading.Event()
+        original_enqueue = cache._enqueue_ticket
+
+        with patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent):
+            capture = _CudaTimelineCapture(torch.device("cuda"))
+            capture.begin(object())
+
+            def observe_enqueue(queued: ExpertLoadTicket, **_kwargs: object) -> None:
+                self.assertIs(queued, ticket)
+                self.assertIs(queued.cuda_timeline, capture)
+                ledger_entry = capture._transfer_ledger.get(id(queued))
+                self.assertIsNotNone(ledger_entry)
+                self.assertIs(ledger_entry.ticket, queued)
+                observed_enqueue.set()
+
+            cache._enqueue_ticket = observe_enqueue  # type: ignore[method-assign]
+            try:
+                requeued = cache._requeue_discarded_lookahead(
+                    ticket,
+                    cuda_timeline=capture,
+                )
+            finally:
+                cache._enqueue_ticket = original_enqueue  # type: ignore[method-assign]
+                with cache._condition:
+                    cache._pending_by_key.pop(key, None)
+                    ticket.state = "discarded"
+                capture.cancel_transfer(ticket, "test cleanup")
+
+        self.assertIs(requeued, ticket)
+        self.assertTrue(observed_enqueue.is_set())
+
     def test_async_stale_hit_promotes_a_concurrent_lookahead_to_demand(self) -> None:
         cache = self._cache(
             1,
@@ -2567,6 +2619,89 @@ class PagedRuntimeTests(unittest.TestCase):
                 "h2d_span_count": h2d_span_count,
             },
         )
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_stale_resident_lookahead_reload_has_coverage(
+        self,
+    ) -> None:
+        """An evicted resident lookahead must trace its later demand reload."""
+
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+        one = ExpertKey(0, 1)
+
+        # Create a logical resident before the scope.  The first lookahead
+        # below is therefore a cache-hit placeholder rather than a transfer.
+        cache.set_pipeline_mode("sync")
+        cache.get(one)
+        cache.set_pipeline_mode("async")
+
+        generator = torch.Generator().manual_seed(20260816)
+        hidden_states = torch.randn(2, self.hidden_size, generator=generator).to(
+            cache.device
+        )
+        top_k_index = torch.tensor([[0], [1]], device=cache.device)
+        top_k_weights = torch.ones(2, 1, device=cache.device)
+        expected = self._reference_forward(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+        )
+        submitted: dict[ExpertKey, ExpertLoadTicket] = {}
+        original_submit = cache._submit_lookahead
+
+        def observe_submit(
+            key: ExpertKey,
+            *,
+            cuda_timeline: _CudaTimelineCapture | None = None,
+        ) -> ExpertLoadTicket:
+            ticket = original_submit(key, cuda_timeline=cuda_timeline)
+            submitted[key] = ticket
+            if key == one:
+                self.assertEqual(ticket.state, "resident")
+                self.assertTrue(ticket.is_lookahead)
+                # A hit has no H2D yet, so admission is deliberately deferred
+                # until eviction makes it worker-visible work.
+                self.assertIsNone(ticket.cuda_timeline)
+            return ticket
+
+        cache._submit_lookahead = observe_submit  # type: ignore[method-assign]
+        try:
+            with runtime.cuda_timeline_capture() as capture:
+                actual = runtime.forward(
+                    0,
+                    hidden_states,
+                    top_k_index,
+                    top_k_weights,
+                )
+                torch.cuda.synchronize(cache.device)
+        finally:
+            cache._submit_lookahead = original_submit  # type: ignore[method-assign]
+
+        self.assertIsNotNone(capture.result)
+        timeline = capture.result
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        self.assertTrue(timeline["complete"])
+        self.assertEqual(timeline["schema_version"], 2)
+        h2d_span_count = sum(span["lane"] == "h2d" for span in timeline["spans"])
+        self.assertEqual(h2d_span_count, 2)
+        self.assertEqual(
+            timeline["coverage"],
+            {"cache_transfer_loads_delta": 2, "h2d_span_count": 2},
+        )
+        self.assertIs(submitted[one].cuda_timeline, capture)
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (one,))
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),
