@@ -57,6 +57,7 @@ _PIPELINE_INTEGER_METRICS = (
     "storage_failures",
     "transfer_failures",
     "staging_waits",
+    "proactive_h2d_slot_declines",
     "adaptive_async_forwards",
     "adaptive_sync_forwards",
     "adaptive_async_experts",
@@ -73,6 +74,8 @@ _TIME_METRICS = (
 )
 _PIPELINE_TIME_METRICS = (
     "storage_queue_seconds",
+    "reader_queue_wait_seconds",
+    "staging_wait_seconds",
     "demand_wait_seconds",
 )
 # The benchmark report itself remains schema v1.  Only the opt-in nested CUDA

@@ -408,6 +408,9 @@ class PagedRuntimeMetrics:
     peak_staging_in_use: int = 0
     staging_waits: int = 0
     storage_queue_seconds: float = 0.0
+    reader_queue_wait_seconds: float = 0.0
+    staging_wait_seconds: float = 0.0
+    proactive_h2d_slot_declines: int = 0
     demand_wait_seconds: float = 0.0
     adaptive_async_forwards: int = 0
     adaptive_sync_forwards: int = 0
@@ -440,6 +443,9 @@ class _MutableMetrics:
     peak_staging_in_use: int = 0
     staging_waits: int = 0
     storage_queue_seconds: float = 0.0
+    reader_queue_wait_seconds: float = 0.0
+    staging_wait_seconds: float = 0.0
+    proactive_h2d_slot_declines: int = 0
     demand_wait_seconds: float = 0.0
     adaptive_async_forwards: int = 0
     adaptive_sync_forwards: int = 0
@@ -467,6 +473,9 @@ class _MutableMetrics:
             peak_staging_in_use=self.peak_staging_in_use,
             staging_waits=self.staging_waits,
             storage_queue_seconds=self.storage_queue_seconds,
+            reader_queue_wait_seconds=self.reader_queue_wait_seconds,
+            staging_wait_seconds=self.staging_wait_seconds,
+            proactive_h2d_slot_declines=self.proactive_h2d_slot_declines,
             demand_wait_seconds=self.demand_wait_seconds,
             adaptive_async_forwards=self.adaptive_async_forwards,
             adaptive_sync_forwards=self.adaptive_sync_forwards,
@@ -1033,6 +1042,7 @@ class ExpertLoadTicket:
     key: ExpertKey
     queued_at: float
     request_clock: int
+    reader_queue_enqueued_at: float | None = None
     storage_done: threading.Event = field(default_factory=threading.Event)
     completed: threading.Event = field(default_factory=threading.Event)
     stage_index: int | None = None
@@ -1323,6 +1333,7 @@ class ExpertSlotCache:
 
     def _claim_staging_slot(self, ticket: ExpertLoadTicket) -> int:
         waited = False
+        staging_wait_started: float | None = None
         while True:
             with self._condition:
                 for stage_index, state in enumerate(self._stage_state):
@@ -1335,10 +1346,15 @@ class ExpertSlotCache:
                             self._metrics.peak_staging_in_use,
                             in_use,
                         )
+                        if staging_wait_started is not None:
+                            self._metrics.staging_wait_seconds += (
+                                time.perf_counter() - staging_wait_started
+                            )
                         return stage_index
                 if not waited:
                     self._metrics.staging_waits += 1
                     waited = True
+                    staging_wait_started = time.perf_counter()
             # The worker may be the only thread alive while an H2D owns every
             # staging buffer.  Poll outside the condition so completed
             # speculative copies release their buffers without a blocking
@@ -1473,6 +1489,7 @@ class ExpertSlotCache:
                 raise RuntimeError("ready lookahead has no staging slot")
             slot = self._select_proactive_slot_locked(ticket.key)
             if slot is None:
+                self._metrics.proactive_h2d_slot_declines += 1
                 return False
             wait_events: list[Any] = []
             last_use = self._slot_last_use_event[slot]
@@ -1538,7 +1555,14 @@ class ExpertSlotCache:
             try:
                 if ticket is None:
                     return
+                dequeued_at = time.perf_counter()
                 with self._condition:
+                    reader_queue_enqueued_at = ticket.reader_queue_enqueued_at
+                    if reader_queue_enqueued_at is not None:
+                        self._metrics.reader_queue_wait_seconds += (
+                            dequeued_at - reader_queue_enqueued_at
+                        )
+                        ticket.reader_queue_enqueued_at = None
                     if ticket.discard_requested and not ticket.demanded:
                         self._retire_undemanded_lookahead_locked(
                             ticket,
@@ -1776,6 +1800,7 @@ class ExpertSlotCache:
         with self._condition:
             self._queued_job_count += 1
         try:
+            ticket.reader_queue_enqueued_at = time.perf_counter()
             jobs.put_nowait(ticket)
         except queue.Full as exc:
             error = RuntimeError(
@@ -1783,6 +1808,7 @@ class ExpertSlotCache:
             )
             with self._condition:
                 self._queued_job_count -= 1
+                ticket.reader_queue_enqueued_at = None
                 if self._pending_by_key.get(ticket.key) is ticket:
                     del self._pending_by_key[ticket.key]
                 if rollback_request:

@@ -1211,6 +1211,83 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertTrue(compute_started.is_set())
         self.assertTrue(future_read_started.is_set())
 
+    def test_async_metrics_separate_reader_queue_wait_from_storage_queue(self) -> None:
+        """Reader backlog is measured independently of the legacy aggregate."""
+
+        cache = self._cache(
+            1,
+            staging_slots=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        ticket = ExpertLoadTicket(
+            key=ExpertKey(0, 0),
+            queued_at=0.0,
+            request_clock=0,
+        )
+        jobs = cache._jobs
+        self.assertIsNotNone(jobs)
+
+        with patch(
+            "moevm.paged_runtime.time.perf_counter",
+            side_effect=(10.0, 13.0, 20.0, 23.0),
+        ):
+            cache._enqueue_ticket(ticket)
+            jobs.put_nowait(None)
+            cache._io_worker()
+
+        self.assertIsNone(ticket.reader_queue_enqueued_at)
+        self.assertTrue(ticket.storage_done.is_set())
+        metrics = cache.metrics()
+        self.assertEqual(metrics.reader_queue_wait_seconds, 3.0)
+        # Kept for compatibility: this legacy value still includes all time
+        # from submit construction through staging acquisition.
+        self.assertEqual(metrics.storage_queue_seconds, 20.0)
+        self.assertEqual(metrics.staging_wait_seconds, 0.0)
+        with cache._condition:
+            cache._free_staging_slot_locked(0, ticket)
+
+    def test_staging_wait_metric_accumulates_one_full_buffer_episode(self) -> None:
+        cache = self._cache(1, staging_slots=1)
+        self.addCleanup(cache.close)
+        blocker = ExpertLoadTicket(
+            key=ExpertKey(0, 0),
+            queued_at=0.0,
+            request_clock=0,
+        )
+        ticket = ExpertLoadTicket(
+            key=ExpertKey(0, 1),
+            queued_at=0.0,
+            request_clock=0,
+        )
+        with cache._condition:
+            cache._stage_owner[0] = blocker
+            cache._stage_state[0] = "reading"
+
+        def release_staging(*_args: object, **_kwargs: object) -> bool:
+            cache._stage_owner[0] = None
+            cache._stage_state[0] = "free"
+            return True
+
+        with (
+            patch(
+                "moevm.paged_runtime.time.perf_counter",
+                side_effect=(100.0, 106.25),
+            ),
+            patch.object(
+                cache._condition,
+                "wait",
+                side_effect=release_staging,
+            ),
+        ):
+            self.assertEqual(cache._claim_staging_slot(ticket), 0)
+
+        metrics = cache.metrics()
+        self.assertEqual(metrics.staging_waits, 1)
+        self.assertEqual(metrics.staging_wait_seconds, 6.25)
+        with cache._condition:
+            cache._free_staging_slot_locked(0, ticket)
+
     def test_async_forward_releases_lease_when_next_submit_fails(self) -> None:
         hidden_states = torch.ones(2, self.hidden_size)
         top_k_index = torch.tensor([[0, 1], [2, 0]], dtype=torch.long)
@@ -2022,6 +2099,33 @@ class PagedRuntimeTests(unittest.TestCase):
         metrics = cache.metrics()
         self.assertEqual((metrics.requests, metrics.hits, metrics.misses), (1, 0, 1))
         self.assertEqual(metrics.evictions, 0)
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_async_cuda_counts_proactive_h2d_decline_without_empty_slot(self) -> None:
+        cache = self._cache(
+            1,
+            device="cuda",
+            staging_slots=1,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        resident = ExpertKey(0, 0)
+        lookahead = ExpertKey(0, 1)
+
+        cache.set_pipeline_mode("sync")
+        cache.get(resident)
+        cache.set_pipeline_mode("async")
+        ticket = cache._submit_lookahead(lookahead)
+        self.assertTrue(ticket.storage_done.wait(timeout=2.0))
+
+        self.assertIsNone(ticket.destination_slot)
+        self.assertEqual(cache.metrics().proactive_h2d_slot_declines, 1)
+
+        cache.wait_idle()
+        self.assertEqual(cache.resident_keys, (resident,))
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

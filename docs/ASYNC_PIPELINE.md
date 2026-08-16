@@ -268,6 +268,15 @@ stream spends behind a readiness event. `pending_loads_peak` covers all pending
 keys, including queued and serviced work, while `peak_staging_in_use` is the
 separate bounded staging-occupancy metric.
 
+The host diagnostics split pipeline pressure without changing cache invariants:
+`reader_queue_wait_seconds` is accepted enqueue-to-worker-dequeue dwell time,
+`staging_wait_seconds` is time from first observing no free staging buffer to a
+successful claim, and `proactive_h2d_slot_declines` counts ready, undemanded
+lookaheads that could not start H2D because no safe empty GPU slot existed.
+`storage_queue_seconds` remains the legacy aggregate. These are Python-host
+backpressure signals, not proof of physical NVMe saturation, and are diagnostic
+only rather than sync/async pair invariants.
+
 ## What this MVP does not prove
 
 The current storage backend is mmap/page-cache backed. Therefore CUDA events,

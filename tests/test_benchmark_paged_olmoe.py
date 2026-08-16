@@ -355,6 +355,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=72,
             storage_loads=6,
             transfer_loads=6,
+            proactive_h2d_slot_declines=2,
             adaptive_async_forwards=1,
             adaptive_sync_forwards=2,
             adaptive_async_experts=4,
@@ -364,6 +365,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             storage_seconds=1.0,
             transfer_seconds=2.0,
             forward_seconds=4.0,
+            reader_queue_wait_seconds=0.25,
+            staging_wait_seconds=0.5,
         )
         after = SimpleNamespace(
             requests=14,
@@ -374,6 +377,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=84,
             storage_loads=7,
             transfer_loads=7,
+            proactive_h2d_slot_declines=5,
             adaptive_async_forwards=2,
             adaptive_sync_forwards=4,
             adaptive_async_experts=7,
@@ -383,6 +387,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             storage_seconds=1.5,
             transfer_seconds=2.25,
             forward_seconds=5.0,
+            reader_queue_wait_seconds=0.75,
+            staging_wait_seconds=1.25,
         )
 
         delta = _HARNESS._metrics_delta(after, before)
@@ -392,6 +398,9 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(delta["hits"], 3)
         self.assertEqual(delta["misses"], 1)
         self.assertEqual(delta["hit_rate"], 0.75)
+        self.assertEqual(delta["proactive_h2d_slot_declines"], 3)
+        self.assertEqual(delta["reader_queue_wait_seconds"], 0.5)
+        self.assertEqual(delta["staging_wait_seconds"], 0.75)
         self.assertEqual(delta["adaptive_async_forwards"], 1)
         self.assertEqual(delta["adaptive_sync_forwards"], 2)
         self.assertEqual(delta["adaptive_async_experts"], 3)
