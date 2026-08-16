@@ -165,6 +165,7 @@ class PagedRuntimeTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "measured")
         self.assertTrue(payload["complete"])
+        self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["unit"], "milliseconds")
         self.assertEqual(payload["spans"][0]["name"], "h2d:0:L0:E1")
         self.assertEqual(payload["spans"][1]["name"], "expert_compute:1:L0:E2")
@@ -300,8 +301,212 @@ class PagedRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result["complete"])
         self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["schema_version"], 1)
         self.assertIn("cancelled", str(result["reason"]))
         self.assertEqual(result["spans"], [])
+
+    def test_cuda_timeline_coverage_mismatch_is_incomplete(self) -> None:
+        class FakeEvent:
+            next_timestamp_ms = 0.0
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.timestamp_ms = FakeEvent.next_timestamp_ms
+                FakeEvent.next_timestamp_ms += 1.0
+
+            def record(self, _stream: object) -> None:
+                return None
+
+            def query(self) -> bool:
+                return True
+
+            def elapsed_time(self, event: FakeEvent) -> float:
+                return event.timestamp_ms - self.timestamp_ms
+
+        class FakeStream:
+            def wait_event(self, _event: FakeEvent) -> None:
+                return None
+
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch("moevm.paged_runtime.torch.cuda.synchronize"),
+        ):
+            capture = _CudaTimelineCapture(
+                torch.device("cuda"),
+                transfer_loads_baseline=10,
+            )
+            stream = FakeStream()
+            capture.begin(stream)
+            capture.record_transfer(ExpertKey(0, 0), FakeEvent(), FakeEvent())
+            result = capture.finish(transfer_loads_after_synchronize=lambda: 12)
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["schema_version"], 2)
+        self.assertIn("coverage mismatch", str(result["reason"]))
+        self.assertEqual(result["spans"], [])
+        self.assertEqual(
+            result["coverage"],
+            {"cache_transfer_loads_delta": 2, "h2d_span_count": 1},
+        )
+
+    def test_covered_cuda_timeline_abort_is_v2(self) -> None:
+        capture = _CudaTimelineCapture(
+            torch.device("cuda"),
+            transfer_loads_baseline=0,
+        )
+        capture._state = capture._ACTIVE
+
+        capture.abort()
+
+        self.assertIsNotNone(capture.result)
+        self.assertFalse(capture.result["complete"])
+        self.assertEqual(capture.result["status"], "incomplete")
+        self.assertEqual(capture.result["schema_version"], 2)
+
+    def test_cuda_timeline_runtime_coverage_scopes_drain_and_end_poll(self) -> None:
+        class FakeEvent:
+            next_timestamp_ms = 0.0
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.timestamp_ms = FakeEvent.next_timestamp_ms
+                FakeEvent.next_timestamp_ms += 1.0
+
+            def record(self, _stream: object) -> None:
+                return None
+
+            def query(self) -> bool:
+                return True
+
+            def elapsed_time(self, event: FakeEvent) -> float:
+                return event.timestamp_ms - self.timestamp_ms
+
+        class FakeStream:
+            def wait_event(self, _event: FakeEvent) -> None:
+                return None
+
+        class FakeMetrics:
+            def __init__(self, transfer_loads: int) -> None:
+                self.transfer_loads = transfer_loads
+
+        class FakeCache:
+            def __init__(self) -> None:
+                self.device = torch.device("cuda")
+                self.execution_lock = threading.RLock()
+                self.transfer_loads = 10
+                self.operations: list[str] = []
+
+            def wait_idle(self) -> None:
+                self.operations.append("wait_idle")
+                # The pre-origin drain retires two earlier H2Ds, which must
+                # not appear in this capture's scoped delta.
+                self.transfer_loads += 2
+
+            def _poll_transfer_completions(self) -> None:
+                self.operations.append("poll")
+                # The capture's committed H2D is credited only after the
+                # device synchronization at close.
+                self.transfer_loads += 1
+
+            def metrics(self) -> FakeMetrics:
+                self.operations.append("metrics")
+                return FakeMetrics(self.transfer_loads)
+
+        cache = FakeCache()
+        runtime = PagedExpertRuntime(cache)  # type: ignore[arg-type]
+        stream = FakeStream()
+
+        def synchronize(_device: torch.device) -> None:
+            cache.operations.append("synchronize")
+
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch(
+                "moevm.paged_runtime.torch.cuda.current_stream",
+                return_value=stream,
+            ),
+            patch(
+                "moevm.paged_runtime.torch.cuda.synchronize",
+                side_effect=synchronize,
+            ),
+        ):
+            capture = runtime._begin_cuda_timeline_capture()
+            capture.record_transfer(ExpertKey(0, 0), FakeEvent(), FakeEvent())
+            runtime._end_cuda_timeline_capture(capture, failed=False)
+
+        self.assertIsNotNone(capture.result)
+        self.assertTrue(capture.result["complete"])
+        self.assertEqual(capture.result["status"], "not_applicable")
+        self.assertEqual(capture.result["schema_version"], 2)
+        self.assertEqual(
+            capture.result["coverage"],
+            {"cache_transfer_loads_delta": 1, "h2d_span_count": 1},
+        )
+        self.assertEqual(
+            cache.operations,
+            ["wait_idle", "metrics", "synchronize", "poll", "metrics"],
+        )
+
+    def test_cuda_timeline_runtime_coverage_reports_empty_complete_scope(self) -> None:
+        class FakeEvent:
+            next_timestamp_ms = 0.0
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.timestamp_ms = FakeEvent.next_timestamp_ms
+                FakeEvent.next_timestamp_ms += 1.0
+
+            def record(self, _stream: object) -> None:
+                return None
+
+            def query(self) -> bool:
+                return True
+
+            def elapsed_time(self, event: FakeEvent) -> float:
+                return event.timestamp_ms - self.timestamp_ms
+
+        class FakeStream:
+            def wait_event(self, _event: FakeEvent) -> None:
+                return None
+
+        class FakeMetrics:
+            transfer_loads = 7
+
+        class FakeCache:
+            device = torch.device("cuda")
+            execution_lock = threading.RLock()
+
+            @staticmethod
+            def wait_idle() -> None:
+                return None
+
+            @staticmethod
+            def _poll_transfer_completions() -> None:
+                return None
+
+            @staticmethod
+            def metrics() -> FakeMetrics:
+                return FakeMetrics()
+
+        runtime = PagedExpertRuntime(FakeCache())  # type: ignore[arg-type]
+        stream = FakeStream()
+        with (
+            patch("moevm.paged_runtime.torch.cuda.Event", FakeEvent),
+            patch(
+                "moevm.paged_runtime.torch.cuda.current_stream",
+                return_value=stream,
+            ),
+            patch("moevm.paged_runtime.torch.cuda.synchronize"),
+            runtime.cuda_timeline_capture() as capture,
+        ):
+            pass
+
+        self.assertIsNotNone(capture.result)
+        self.assertTrue(capture.result["complete"])
+        self.assertEqual(capture.result["status"], "not_applicable")
+        self.assertEqual(capture.result["schema_version"], 2)
+        self.assertEqual(
+            capture.result["coverage"],
+            {"cache_transfer_loads_delta": 0, "h2d_span_count": 0},
+        )
 
     def test_cuda_timeline_ledger_retains_each_reserved_ticket_identity(self) -> None:
         """Layer-local tickets cannot have their object id reused mid-capture."""
@@ -2303,6 +2508,11 @@ class PagedRuntimeTests(unittest.TestCase):
 
         self.assertIsNotNone(capture.result)
         self.assertTrue(capture.result["complete"])
+        self.assertEqual(capture.result["schema_version"], 2)
+        self.assertEqual(
+            capture.result["coverage"],
+            {"cache_transfer_loads_delta": 0, "h2d_span_count": 0},
+        )
         self.assertEqual(cache._pending_by_key, {})
         self.assertEqual(cache._stage_state, ["free"])
 
@@ -2347,7 +2557,16 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(capture.result)
         timeline = capture.result
         self.assertTrue(timeline["complete"])
-        self.assertTrue(any(span["lane"] == "h2d" for span in timeline["spans"]))
+        self.assertEqual(timeline["schema_version"], 2)
+        h2d_span_count = sum(span["lane"] == "h2d" for span in timeline["spans"])
+        self.assertGreater(h2d_span_count, 0)
+        self.assertEqual(
+            timeline["coverage"],
+            {
+                "cache_transfer_loads_delta": h2d_span_count,
+                "h2d_span_count": h2d_span_count,
+            },
+        )
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),
@@ -2390,10 +2609,19 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(capture.result)
         timeline = capture.result
         self.assertEqual(timeline["status"], "measured")
+        self.assertEqual(timeline["schema_version"], 2)
         self.assertGreater(timeline["summary"]["transfer"]["interval_count"], 0)
         self.assertGreater(timeline["summary"]["compute"]["interval_count"], 0)
         self.assertGreaterEqual(timeline["summary"]["overlap"]["duration_ms"], 0.0)
         self.assertTrue(all(span["layer"] == 0 for span in timeline["spans"]))
+        h2d_span_count = sum(span["lane"] == "h2d" for span in timeline["spans"])
+        self.assertEqual(
+            timeline["coverage"],
+            {
+                "cache_transfer_loads_delta": h2d_span_count,
+                "h2d_span_count": h2d_span_count,
+            },
+        )
 
     @unittest.skipUnless(
         torch is not None and torch.cuda.is_available(),

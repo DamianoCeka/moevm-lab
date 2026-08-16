@@ -20,10 +20,13 @@ _SPEC.loader.exec_module(_RENDERER)
 
 
 def _timeline(
-    spans: list[dict[str, object]], *, status: str = "measured"
+    spans: list[dict[str, object]],
+    *,
+    schema_version: int = 1,
+    status: str = "measured",
 ) -> dict[str, object]:
-    return {
-        "schema_version": 1,
+    timeline: dict[str, object] = {
+        "schema_version": schema_version,
         "complete": True,
         "status": status,
         "method": "cuda_events_v1",
@@ -31,9 +34,16 @@ def _timeline(
         "unit": "milliseconds",
         "spans": spans,
     }
+    if schema_version == 2:
+        h2d_span_count = sum(span["lane"] == "h2d" for span in spans)
+        timeline["coverage"] = {
+            "cache_transfer_loads_delta": h2d_span_count,
+            "h2d_span_count": h2d_span_count,
+        }
+    return timeline
 
 
-def _payload() -> dict[str, object]:
+def _payload(*, timeline_schema_version: int = 1) -> dict[str, object]:
     prefill = _timeline(
         [
             {
@@ -63,7 +73,8 @@ def _payload() -> dict[str, object]:
                 "start_ms": 6.0,
                 "end_ms": 10.0,
             },
-        ]
+        ],
+        schema_version=timeline_schema_version,
     )
     decode = _timeline(
         [
@@ -85,7 +96,8 @@ def _payload() -> dict[str, object]:
                 "start_ms": 2.0,
                 "end_ms": 4.0,
             },
-        ]
+        ],
+        schema_version=timeline_schema_version,
     )
     return {
         "schema_version": 1,
@@ -155,6 +167,8 @@ class RenderCudaOverlapTimelineTests(unittest.TestCase):
 
         rendered = _RENDERER.render_svg(selected)
 
+        self.assertEqual(selected.schema_version, 1)
+        self.assertIsNone(selected.coverage)
         self.assertEqual(selected.status, "measured")
         self.assertIn('role="img"', rendered)
         self.assertIn('aria-labelledby="timeline-title timeline-desc"', rendered)
@@ -166,8 +180,36 @@ class RenderCudaOverlapTimelineTests(unittest.TestCase):
         self.assertIn("L0 · E2", rendered)
         self.assertIn('class="overlap"', rendered)
         self.assertIn("Overlap highlighted: 4.000 ms", rendered)
+        self.assertIn("schema v1 legacy event-only telemetry", rendered)
         self.assertIn("do not establish physical NVMe activity", rendered)
         self.assertNotIn("<script", rendered)
+
+    def test_schema_v2_validates_and_exposes_exact_transfer_coverage(self) -> None:
+        selected = _RENDERER.select_timeline(
+            _payload(timeline_schema_version=2),
+            pass_name="cold_expert_cache",
+            selection=_RENDERER.parse_call("prefill"),
+        )
+
+        rendered = _RENDERER.render_svg(selected)
+
+        self.assertEqual(selected.schema_version, 2)
+        self.assertEqual(
+            selected.coverage,
+            _RENDERER.TimelineCoverage(
+                cache_transfer_loads_delta=2,
+                h2d_span_count=2,
+            ),
+        )
+        self.assertIn(
+            "Schema v2 capture coverage is exact: cache transfer loads delta and "
+            "recorded H2D spans both equal 2.",
+            rendered,
+        )
+        self.assertIn(
+            "Coverage (schema v2): cache transfer loads delta 2 = raw H2D spans 2.",
+            rendered,
+        )
 
     def test_decode_selection_uses_recorded_per_token_index(self) -> None:
         selected = _RENDERER.select_timeline(
@@ -214,6 +256,78 @@ class RenderCudaOverlapTimelineTests(unittest.TestCase):
             "complete"
         ] = False
         with self.assertRaisesRegex(ValueError, "must be complete"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+    def test_rejects_unknown_schema_and_invalid_v2_coverage(self) -> None:
+        payload = _payload()
+        payload["passes"]["cold_expert_cache"]["prefill"]["cuda_event_timeline"][
+            "schema_version"
+        ] = 3
+        with self.assertRaisesRegex(ValueError, "must be 1 or 2"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        del timeline["coverage"]
+        with self.assertRaisesRegex(ValueError, "coverage must be a JSON object"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        timeline["coverage"]["unexpected"] = 0
+        with self.assertRaisesRegex(ValueError, "must contain exactly"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        timeline["coverage"]["h2d_span_count"] = 1
+        with self.assertRaisesRegex(ValueError, "raw H2D span count"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        timeline["coverage"]["cache_transfer_loads_delta"] = 1
+        with self.assertRaisesRegex(ValueError, "must equal h2d_span_count"):
+            _RENDERER.select_timeline(
+                payload,
+                pass_name="cold_expert_cache",
+                selection=_RENDERER.parse_call("prefill"),
+            )
+
+        payload = _payload(timeline_schema_version=2)
+        timeline = payload["passes"]["cold_expert_cache"]["prefill"][
+            "cuda_event_timeline"
+        ]
+        timeline["coverage"]["cache_transfer_loads_delta"] = True
+        with self.assertRaisesRegex(ValueError, "non-negative integer"):
             _RENDERER.select_timeline(
                 payload,
                 pass_name="cold_expert_cache",

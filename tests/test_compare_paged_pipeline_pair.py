@@ -237,7 +237,7 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         )
         summary.pop("intervals")
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "measured",
             "method": "cuda_events_v1",
             "scope": "paged_expert_h2d_vs_expert_compute",
@@ -246,6 +246,10 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             "reason": None,
             "spans": spans,
             "summary": summary,
+            "coverage": {
+                "cache_transfer_loads_delta": 1,
+                "h2d_span_count": 1,
+            },
         }
 
     @staticmethod
@@ -264,7 +268,7 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             if reason is not None and reason not in reasons:
                 reasons.append(reason)
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "measured" if measured_calls else "not_applicable",
             "method": "cuda_events_v1",
             "scope": "paged_expert_h2d_vs_expert_compute",
@@ -311,7 +315,7 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         )
         summary.pop("intervals")
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "not_applicable",
             "method": "cuda_events_v1",
             "scope": "paged_expert_h2d_vs_expert_compute",
@@ -320,6 +324,10 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             "reason": "no expert H2D intervals were observed in this model call",
             "spans": spans,
             "summary": summary,
+            "coverage": {
+                "cache_transfer_loads_delta": 0,
+                "h2d_span_count": 0,
+            },
         }
 
     def _with_cuda_telemetry(self, report: dict[str, Any]) -> dict[str, Any]:
@@ -394,6 +402,56 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cuda_overlap_telemetry"):
             _COMPARATOR.compare_reports(sync, async_)
 
+    def test_disabled_cuda_telemetry_preserves_legacy_reports_without_coverage(
+        self,
+    ) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        for report in (sync, async_):
+            report["runtime"]["cuda_overlap_telemetry"] = {
+                "requested": False,
+                "method": None,
+                "scope": None,
+            }
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
+    def test_disabled_or_absent_telemetry_rejects_stray_result_fields(self) -> None:
+        mutators: dict[str, Callable[[dict[str, Any]], None]] = {
+            "prefill": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ].__setitem__("cuda_event_timeline", {}),
+            "first token": lambda row: row["passes"]["cold_expert_cache"][
+                "first_token"
+            ].__setitem__("cuda_event_timeline", {}),
+            "decode": lambda row: row["passes"]["cold_expert_cache"]["decode"][
+                "per_token"
+            ][0].__setitem__("cuda_event_timeline", {}),
+            "aggregate": lambda row: row["passes"]["cold_expert_cache"].__setitem__(
+                "cuda_overlap", {}
+            ),
+        }
+        for configuration in ("absent", "disabled"):
+            for name, mutate in mutators.items():
+                with self.subTest(configuration=configuration, name=name):
+                    sync = self._report("sync")
+                    async_ = self._report("async")
+                    if configuration == "disabled":
+                        for report in (sync, async_):
+                            report["runtime"]["cuda_overlap_telemetry"] = {
+                                "requested": False,
+                                "method": None,
+                                "scope": None,
+                            }
+                    mutate(async_)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "must be absent when CUDA telemetry is not requested",
+                    ):
+                        _COMPARATOR.compare_reports(sync, async_)
+
     def test_requested_cuda_telemetry_requires_complete_derived_pass_data(self) -> None:
         sync = self._with_cuda_telemetry(self._report("sync"))
         async_ = self._with_cuda_telemetry(self._report("async"))
@@ -438,6 +496,24 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             ]["cuda_event_timeline"]["summary"]["transfer"].__setitem__(
                 "interval_count", True
             ),
+            "missing coverage": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ]["cuda_event_timeline"].pop("coverage"),
+            "coverage H2D span mismatch": lambda row: row["passes"][
+                "cold_expert_cache"
+            ]["prefill"]["cuda_event_timeline"]["coverage"].__setitem__(
+                "h2d_span_count", 2
+            ),
+            "coverage cache-transfer mismatch": lambda row: row["passes"][
+                "cold_expert_cache"
+            ]["prefill"]["cuda_event_timeline"]["coverage"].__setitem__(
+                "cache_transfer_loads_delta", 2
+            ),
+            "coverage boolean count": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ]["cuda_event_timeline"]["coverage"].__setitem__(
+                "cache_transfer_loads_delta", True
+            ),
             "duplicate sequence": lambda row: row["passes"]["cold_expert_cache"][
                 "prefill"
             ]["cuda_event_timeline"]["spans"][1].update(
@@ -453,6 +529,23 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
                 async_ = self._with_cuda_telemetry(self._report("async"))
                 mutate(async_)
                 with self.assertRaises(ValueError):
+                    _COMPARATOR.compare_reports(sync, async_)
+
+    def test_requested_v1_cuda_telemetry_is_legacy_unverified(self) -> None:
+        mutators: dict[str, Callable[[dict[str, Any]], None]] = {
+            "per-call timeline": lambda row: row["passes"]["cold_expert_cache"][
+                "prefill"
+            ]["cuda_event_timeline"].__setitem__("schema_version", 1),
+            "aggregate": lambda row: row["passes"]["cold_expert_cache"][
+                "cuda_overlap"
+            ].__setitem__("schema_version", 1),
+        }
+        sync = self._with_cuda_telemetry(self._report("sync"))
+        for name, mutate in mutators.items():
+            with self.subTest(name=name):
+                async_ = self._with_cuda_telemetry(self._report("async"))
+                mutate(async_)
+                with self.assertRaisesRegex(ValueError, "legacy-unverified"):
                     _COMPARATOR.compare_reports(sync, async_)
 
     def test_requested_cuda_telemetry_surfaces_incomplete_capture_reason(self) -> None:

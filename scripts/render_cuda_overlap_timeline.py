@@ -85,8 +85,18 @@ class SelectedTimeline:
 
     pass_name: str
     selection: CallSelection
+    schema_version: int
     status: str
     spans: tuple[TimelineSpan, ...]
+    coverage: TimelineCoverage | None
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineCoverage:
+    """Capture-local cache accounting introduced by nested timeline schema v2."""
+
+    cache_transfer_loads_delta: int
+    h2d_span_count: int
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -109,6 +119,12 @@ def _optional_integer(value: object, label: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{label} must be an integer when present")
+    return value
+
+
+def _nonnegative_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
     return value
 
 
@@ -234,8 +250,11 @@ def select_timeline(
             "(run the benchmark with --cuda-overlap-telemetry)"
         ),
     )
-    if timeline.get("schema_version") != 1:
-        raise ValueError("cuda_event_timeline.schema_version must be 1")
+    schema_version = _nonnegative_integer(
+        timeline.get("schema_version"), "cuda_event_timeline.schema_version"
+    )
+    if schema_version not in {1, 2}:
+        raise ValueError("cuda_event_timeline.schema_version must be 1 or 2")
     if timeline.get("complete") is not True:
         raise ValueError("cuda_event_timeline must be complete before rendering")
     if timeline.get("method") != "cuda_events_v1":
@@ -252,11 +271,57 @@ def select_timeline(
     spans = timeline.get("spans")
     if not isinstance(spans, list):
         raise ValueError("cuda_event_timeline.spans must be an array")
+    parsed_spans = tuple(_timeline_span(raw, index) for index, raw in enumerate(spans))
+    # v1 predates capture-local cache coverage.  Treat it as event-only even
+    # when an older producer happened to include unrelated extension fields.
+    coverage = (
+        _timeline_coverage(timeline, parsed_spans) if schema_version == 2 else None
+    )
     return SelectedTimeline(
         pass_name=pass_name,
         selection=selection,
+        schema_version=schema_version,
         status=status,
-        spans=tuple(_timeline_span(raw, index) for index, raw in enumerate(spans)),
+        spans=parsed_spans,
+        coverage=coverage,
+    )
+
+
+def _timeline_coverage(
+    timeline: Mapping[str, Any],
+    spans: tuple[TimelineSpan, ...],
+) -> TimelineCoverage:
+    """Validate v2's exact cache-transfer/H2D-span correspondence."""
+
+    coverage = _mapping(timeline.get("coverage"), "cuda_event_timeline.coverage")
+    expected_fields = {"cache_transfer_loads_delta", "h2d_span_count"}
+    if set(coverage) != expected_fields:
+        raise ValueError(
+            "cuda_event_timeline.coverage must contain exactly "
+            "cache_transfer_loads_delta and h2d_span_count"
+        )
+    cache_transfer_loads_delta = _nonnegative_integer(
+        coverage.get("cache_transfer_loads_delta"),
+        "cuda_event_timeline.coverage.cache_transfer_loads_delta",
+    )
+    h2d_span_count = _nonnegative_integer(
+        coverage.get("h2d_span_count"),
+        "cuda_event_timeline.coverage.h2d_span_count",
+    )
+    raw_h2d_span_count = sum(span.lane == "h2d" for span in spans)
+    if h2d_span_count != raw_h2d_span_count:
+        raise ValueError(
+            "cuda_event_timeline.coverage.h2d_span_count must equal the "
+            "raw H2D span count"
+        )
+    if cache_transfer_loads_delta != h2d_span_count:
+        raise ValueError(
+            "cuda_event_timeline.coverage.cache_transfer_loads_delta must equal "
+            "h2d_span_count"
+        )
+    return TimelineCoverage(
+        cache_transfer_loads_delta=cache_transfer_loads_delta,
+        h2d_span_count=h2d_span_count,
     )
 
 
@@ -393,7 +458,7 @@ def render_svg(timeline: SelectedTimeline) -> str:
     body_top = h2d_top + 43.0
     body_bottom = compute_top + compute_height - 16.0
     summary_top = compute_top + compute_height + 32.0
-    height = int(summary_top + 164.0)
+    height = int(summary_top + 187.0)
 
     def x_position(value: float) -> float:
         return _PLOT_LEFT + (value - min_ms) / scale_span_ms * (
@@ -409,7 +474,14 @@ def render_svg(timeline: SelectedTimeline) -> str:
         f"{timeline.selection.display_name}. It contains {len(h2d_spans)} H2D spans "
         f"and {len(compute_spans)} expert-compute spans. Highlighted vertical bands "
         f"show {overlap_ms:.6f} milliseconds where the two active lanes overlap. "
-        "This instrumentation does not prove physical NVMe activity or end-to-end speedup."
+        + (
+            "Schema v2 capture coverage is exact: cache transfer loads delta and "
+            f"recorded H2D spans both equal {timeline.coverage.h2d_span_count}. "
+            if timeline.coverage is not None
+            else "Schema v1 is legacy event-only telemetry and has no cache-transfer "
+            "coverage assertion. "
+        )
+        + "This instrumentation does not prove physical NVMe activity or end-to-end speedup."
     )
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -531,9 +603,16 @@ def render_svg(timeline: SelectedTimeline) -> str:
         if overlap_fraction is None
         else f"{overlap_fraction * 100:.1f}% of H2D active time"
     )
+    coverage_text = (
+        "Coverage (schema v2): cache transfer loads delta "
+        f"{timeline.coverage.cache_transfer_loads_delta} = raw H2D spans "
+        f"{timeline.coverage.h2d_span_count}."
+        if timeline.coverage is not None
+        else "Coverage: schema v1 legacy event-only telemetry (not recorded)."
+    )
     lines.extend(
         [
-            f'<rect x="42" y="{summary_top:.1f}" width="1196" height="132" rx="10" class="panel"/>',
+            f'<rect x="42" y="{summary_top:.1f}" width="1196" height="155" rx="10" class="panel"/>',
             _text(
                 66,
                 summary_top + 30,
@@ -548,13 +627,19 @@ def render_svg(timeline: SelectedTimeline) -> str:
             ),
             _text(
                 66,
-                summary_top + 86,
+                summary_top + 82,
+                coverage_text,
+                css_class="note",
+            ),
+            _text(
+                66,
+                summary_top + 107,
                 "Caveat: CUDA-event intervals cover paged-expert H2D and expert compute only; they do not establish physical NVMe activity, page-cache state, or an end-to-end speedup.",
                 css_class="note",
             ),
             _text(
                 66,
-                summary_top + 109,
+                summary_top + 130,
                 "Use this to inspect one call. Compare wall time only between paired runs collected with the same telemetry setting.",
                 css_class="note",
             ),

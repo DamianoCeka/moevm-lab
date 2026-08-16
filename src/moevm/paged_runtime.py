@@ -31,7 +31,7 @@ import queue
 import re
 import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -502,6 +502,8 @@ class _CudaTimelineTransferLedger:
 def _cuda_timeline_payload(
     origin_event: Any,
     spans: Iterable[_CudaTimelineEventSpan],
+    *,
+    schema_version: int = 1,
 ) -> dict[str, Any]:
     """Materialize one same-device CUDA timeline after its events complete.
 
@@ -561,7 +563,7 @@ def _cuda_timeline_payload(
         status = "not_applicable"
         reason = "no expert compute intervals were observed in this model call"
     return {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "status": status,
         "method": "cuda_events_v1",
         "scope": "paged_expert_h2d_vs_expert_compute",
@@ -581,9 +583,16 @@ class _CudaTimelineCapture:
     _FINISHED = "finished"
     _ABORTED = "aborted"
 
-    def __init__(self, device: torch.device) -> None:
+    def __init__(
+        self,
+        device: torch.device,
+        *,
+        transfer_loads_baseline: int | None = None,
+    ) -> None:
         if device.type != "cuda":
             raise ValueError("CUDA timeline capture requires a CUDA device")
+        if transfer_loads_baseline is not None and transfer_loads_baseline < 0:
+            raise ValueError("CUDA timeline transfer baseline cannot be negative")
         self.device = device
         self._condition = threading.Condition(threading.RLock())
         self._origin_event: Any | None = None
@@ -596,8 +605,19 @@ class _CudaTimelineCapture:
         # the old race where a worker could append an H2D span after the
         # forward thread had already finalized the capture.
         self._transfer_ledger: dict[int, _CudaTimelineTransferLedger] = {}
+        # The cache credits async H2Ds only when a completion poll retires the
+        # transfer.  A capture span is committed at enqueue time, so compare
+        # against a cache metric delta scoped by snapshots around this capture.
+        self._transfer_loads_baseline = transfer_loads_baseline
+        self._transfer_coverage: dict[str, int] | None = None
         self._incomplete_reason: str | None = None
         self.result: dict[str, Any] | None = None
+
+    @property
+    def _schema_version(self) -> int:
+        """Keep unscoped low-level events readable as legacy v1 evidence."""
+
+        return 2 if self._transfer_loads_baseline is not None else 1
 
     def begin(self, compute_stream: Any) -> None:
         with self._condition:
@@ -839,10 +859,34 @@ class _CudaTimelineCapture:
                 del self._transfer_ledger[token]
             self._condition.notify_all()
 
+    def _reconcile_transfer_coverage(self, transfer_loads_after: int) -> None:
+        """Fail closed unless cache retirement matches committed H2D spans."""
+
+        with self._condition:
+            baseline = self._transfer_loads_baseline
+            if baseline is None:
+                return
+            transfer_loads_delta = transfer_loads_after - baseline
+            h2d_span_count = sum(span.lane == "h2d" for span in self._spans)
+            self._transfer_coverage = {
+                "cache_transfer_loads_delta": transfer_loads_delta,
+                "h2d_span_count": h2d_span_count,
+            }
+            if transfer_loads_delta < 0:
+                self._mark_incomplete_locked(
+                    "cache transfer metric decreased during CUDA timeline capture"
+                )
+            elif h2d_span_count != transfer_loads_delta:
+                self._mark_incomplete_locked(
+                    "CUDA timeline H2D coverage mismatch: "
+                    f"{h2d_span_count} spans but cache recorded "
+                    f"{transfer_loads_delta} transfers"
+                )
+
     def _incomplete_payload_locked(self) -> dict[str, Any]:
         summary = summarize_cuda_timeline(transfers=(), compute=())
-        return {
-            "schema_version": 1,
+        payload: dict[str, Any] = {
+            "schema_version": self._schema_version,
             "status": "incomplete",
             "method": "cuda_events_v1",
             "scope": "paged_expert_h2d_vs_expert_compute",
@@ -855,8 +899,15 @@ class _CudaTimelineCapture:
                 key: value for key, value in summary.items() if key != "intervals"
             },
         }
+        if self._transfer_coverage is not None:
+            payload["coverage"] = dict(self._transfer_coverage)
+        return payload
 
-    def finish(self) -> dict[str, Any]:
+    def finish(
+        self,
+        *,
+        transfer_loads_after_synchronize: Callable[[], int] | None = None,
+    ) -> dict[str, Any]:
         self._begin_close()
         self._wait_for_claimed_transfers()
         try:
@@ -864,6 +915,26 @@ class _CudaTimelineCapture:
         except Exception as exc:  # noqa: BLE001 - evidence must fail closed
             self.invalidate(f"CUDA timeline synchronization failed: {exc}")
         self._settle_enqueued_transfers()
+        with self._condition:
+            needs_coverage = (
+                self._transfer_loads_baseline is not None
+                and self._state not in (self._FINISHED, self._ABORTED)
+                and self._incomplete_reason is None
+            )
+        if needs_coverage:
+            if transfer_loads_after_synchronize is None:
+                self.invalidate(
+                    "CUDA timeline cache transfer metric snapshot was not provided"
+                )
+            else:
+                try:
+                    transfer_loads_after = transfer_loads_after_synchronize()
+                except Exception as exc:  # noqa: BLE001 - evidence must fail closed
+                    self.invalidate(
+                        f"CUDA timeline cache transfer metric snapshot failed: {exc}"
+                    )
+                else:
+                    self._reconcile_transfer_coverage(transfer_loads_after)
         with self._condition:
             if self._state in (self._FINISHED, self._ABORTED):
                 if self.result is None:  # pragma: no cover - internal invariant
@@ -876,7 +947,11 @@ class _CudaTimelineCapture:
             origin = self.origin_event
             spans = tuple(self._spans)
         try:
-            result = _cuda_timeline_payload(origin, spans)
+            result = _cuda_timeline_payload(
+                origin,
+                spans,
+                schema_version=self._schema_version,
+            )
         except Exception as exc:  # noqa: BLE001 - evidence must fail closed
             self.invalidate(f"CUDA timeline materialization failed: {exc}")
             with self._condition:
@@ -889,6 +964,8 @@ class _CudaTimelineCapture:
             if self._incomplete_reason is not None:
                 self.result = self._incomplete_payload_locked()
             else:
+                if self._transfer_coverage is not None:
+                    result["coverage"] = dict(self._transfer_coverage)
                 self.result = result
             self._state = self._FINISHED
             return self.result
@@ -2678,10 +2755,25 @@ class PagedExpertRuntime:
             # work submitted before the scope so a prior lookahead cannot
             # enqueue an unrelated H2D into this call's evidence window.
             self.cache.wait_idle()
-            capture = _CudaTimelineCapture(self.cache.device)
+            transfer_loads_baseline = self.cache.metrics().transfer_loads
+            capture = _CudaTimelineCapture(
+                self.cache.device,
+                transfer_loads_baseline=transfer_loads_baseline,
+            )
             capture.begin(torch.cuda.current_stream(self.cache.device))
             self._active_cuda_timeline = capture
             return capture
+
+    def _timeline_transfer_loads_after_synchronize(self) -> int:
+        """Credit ready async H2Ds before finalizing one capture's coverage."""
+
+        # `finish()` has synchronized the capture device but intentionally
+        # leaves normal cache ownership alone.  Polling is enough to turn
+        # those completed events into `transfer_loads`; a full `wait_idle()`
+        # would retire valid undemanded proactive lookaheads and alter the
+        # capture's logical lifecycle.
+        self.cache._poll_transfer_completions()
+        return self.cache.metrics().transfer_loads
 
     def _end_cuda_timeline_capture(
         self,
@@ -2698,7 +2790,11 @@ class PagedExpertRuntime:
                 if failed:
                     capture.abort()
                 else:
-                    capture.finish()
+                    capture.finish(
+                        transfer_loads_after_synchronize=(
+                            self._timeline_transfer_loads_after_synchronize
+                        )
+                    )
             finally:
                 self._active_cuda_timeline = None
 

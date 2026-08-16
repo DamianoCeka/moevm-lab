@@ -86,7 +86,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         if resolved_status == "not_applicable" and reason is None:
             reason = "one CUDA event lane was not observed in this model call"
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "complete": True,
             "status": resolved_status,
             "method": "cuda_events_v1",
@@ -95,6 +95,10 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             "reason": reason,
             "spans": spans,
             "summary": summary,
+            "coverage": {
+                "cache_transfer_loads_delta": len(h2d),
+                "h2d_span_count": len(h2d),
+            },
         }
 
     def _args(self, *extra: str) -> argparse.Namespace:
@@ -442,6 +446,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "measured")
+        self.assertEqual(result["schema_version"], 2)
         self.assertEqual(result["model_call_count"], 2)
         self.assertEqual(result["measured_model_call_count"], 1)
         self.assertEqual(result["h2d_interval_count"], 2)
@@ -489,6 +494,16 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             "summary boolean count": lambda call: call["summary"][
                 "transfer"
             ].__setitem__("interval_count", True),
+            "missing coverage": lambda call: call.pop("coverage"),
+            "coverage H2D span mismatch": lambda call: call["coverage"].__setitem__(
+                "h2d_span_count", 2
+            ),
+            "coverage cache-transfer mismatch": lambda call: call[
+                "coverage"
+            ].__setitem__("cache_transfer_loads_delta", 2),
+            "coverage boolean count": lambda call: call["coverage"].__setitem__(
+                "cache_transfer_loads_delta", True
+            ),
         }
         for name, mutate in mutators.items():
             with self.subTest(name=name):
@@ -517,6 +532,16 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             RuntimeError,
             "status='incomplete'.*cancelled before it could be measured",
         ):
+            _HARNESS._aggregate_cuda_overlap([call])
+
+    def test_cuda_overlap_aggregation_rejects_legacy_unverified_schema(self) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call["schema_version"] = 1
+
+        with self.assertRaisesRegex(RuntimeError, "legacy-unverified"):
             _HARNESS._aggregate_cuda_overlap([call])
 
     def test_cuda_overlap_aggregation_accepts_worker_compatible_span_metadata(
@@ -672,6 +697,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         )
 
         self.assertEqual(result["cuda_overlap"]["status"], "measured")
+        self.assertEqual(result["cuda_overlap"]["schema_version"], 2)
+        self.assertEqual(result["prefill"]["cuda_event_timeline"]["schema_version"], 2)
         self.assertEqual(result["cuda_overlap"]["h2d_union_ms"], 4.0)
         self.assertEqual(result["cuda_overlap"]["overlap_ms"], 2.0)
         self.assertEqual(result["prefill"]["cuda_event_timeline"], call_timeline)

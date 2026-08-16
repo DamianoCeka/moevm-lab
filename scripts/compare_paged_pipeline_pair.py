@@ -82,7 +82,10 @@ REFERENCE_IDENTITY_FIELDS = (
 _CUDA_TIMELINE_METHOD = "cuda_events_v1"
 _CUDA_TIMELINE_SCOPE = "paged_expert_h2d_vs_expert_compute"
 _CUDA_TIMELINE_UNIT = "milliseconds"
-_CUDA_TIMELINE_SCHEMA_VERSION = 1
+# The outer benchmark report remains schema v1.  The nested CUDA telemetry
+# contract is v2 because v1 could not prove H2D-span coverage.
+_CUDA_TIMELINE_SCHEMA_VERSION = 2
+_LEGACY_CUDA_TIMELINE_SCHEMA_VERSION = 1
 _CUDA_TIMELINE_AGGREGATION = (
     "Summed per-model-call CUDA-event lane summaries; timestamps from different "
     "model calls are not unioned."
@@ -186,9 +189,10 @@ def _cuda_overlap_requested(runtime: dict[str, Any], mode: str) -> bool:
     """Return whether a report must carry strict CUDA-event telemetry.
 
     Reports from before the opt-in feature intentionally omit this object and
-    remain comparable under the pre-existing counter contract.  Once a result
-    claims that telemetry was requested, however, every recorded call must be
-    complete and internally reproducible from its raw CUDA-event spans.
+    all telemetry result fields; those reports remain comparable under the
+    pre-existing counter contract.  Once a result claims that telemetry was
+    requested, every recorded call must be complete and internally
+    reproducible from its raw CUDA-event spans.
     """
 
     raw = runtime.get("cuda_overlap_telemetry")
@@ -207,6 +211,19 @@ def _cuda_overlap_requested(runtime: dict[str, Any], mode: str) -> bool:
     if config.get("scope") != expected_scope:
         raise ValueError(f"{mode}.runtime.cuda_overlap_telemetry.scope is invalid")
     return requested
+
+
+def _require_covered_timeline_schema_version(value: object, name: str) -> None:
+    """Reject v1 telemetry explicitly rather than treating it as covered."""
+
+    schema_version = _integer(value, name)
+    if schema_version == _LEGACY_CUDA_TIMELINE_SCHEMA_VERSION:
+        raise ValueError(
+            f"{name}=1 is legacy-unverified; covered CUDA telemetry requires "
+            f"schema_version={_CUDA_TIMELINE_SCHEMA_VERSION}"
+        )
+    if schema_version != _CUDA_TIMELINE_SCHEMA_VERSION:
+        raise ValueError(f"{name} must be {_CUDA_TIMELINE_SCHEMA_VERSION}")
 
 
 def _timeline_summary_equal(actual: object, expected: object) -> bool:
@@ -273,13 +290,39 @@ def _timeline_span(raw: object, name: str) -> tuple[str, int, CudaInterval]:
     )
 
 
+def _timeline_coverage(
+    timeline: dict[str, Any],
+    *,
+    h2d_span_count: int,
+    name: str,
+) -> None:
+    """Require cache-transfer accounting to cover every raw H2D event."""
+
+    coverage = _mapping(timeline.get("coverage"), f"{name}.coverage")
+    cache_transfer_loads_delta = _integer(
+        coverage.get("cache_transfer_loads_delta"),
+        f"{name}.coverage.cache_transfer_loads_delta",
+    )
+    reported_h2d_span_count = _integer(
+        coverage.get("h2d_span_count"),
+        f"{name}.coverage.h2d_span_count",
+    )
+    if reported_h2d_span_count != h2d_span_count:
+        raise ValueError(
+            f"{name}.coverage.h2d_span_count is inconsistent with raw H2D spans"
+        )
+    if cache_transfer_loads_delta != h2d_span_count:
+        raise ValueError(
+            f"{name}.coverage.cache_transfer_loads_delta is inconsistent with raw H2D spans"
+        )
+
+
 def _timeline_call(raw: object, name: str) -> dict[str, Any]:
     timeline = _mapping(raw, name)
-    if (
-        _integer(timeline.get("schema_version"), f"{name}.schema_version")
-        != _CUDA_TIMELINE_SCHEMA_VERSION
-    ):
-        raise ValueError(f"{name}.schema_version must be 1")
+    _require_covered_timeline_schema_version(
+        timeline.get("schema_version"),
+        f"{name}.schema_version",
+    )
     if timeline.get("complete") is not True:
         raise ValueError(
             f"{name} must be complete{_incomplete_timeline_detail(timeline)}"
@@ -316,6 +359,11 @@ def _timeline_call(raw: object, name: str) -> dict[str, Any]:
     expected_summary.pop("intervals")
     if not _timeline_summary_equal(timeline.get("summary"), expected_summary):
         raise ValueError(f"{name}.summary is not derived from its raw spans")
+    _timeline_coverage(
+        timeline,
+        h2d_span_count=len(transfers),
+        name=name,
+    )
 
     has_both_lanes = bool(transfers) and bool(compute)
     reason = timeline.get("reason")
@@ -366,11 +414,10 @@ def _pass_cuda_overlap(
     if not calls:
         raise ValueError(f"{name} requires at least one model-call timeline")
     aggregate = _mapping(raw, name)
-    if (
-        _integer(aggregate.get("schema_version"), f"{name}.schema_version")
-        != _CUDA_TIMELINE_SCHEMA_VERSION
-    ):
-        raise ValueError(f"{name}.schema_version must be 1")
+    _require_covered_timeline_schema_version(
+        aggregate.get("schema_version"),
+        f"{name}.schema_version",
+    )
     if aggregate.get("method") != _CUDA_TIMELINE_METHOD:
         raise ValueError(f"{name}.method is invalid")
     if aggregate.get("scope") != _CUDA_TIMELINE_SCOPE:
@@ -507,6 +554,47 @@ def _validate_cuda_telemetry_pass(
     )
 
 
+def _validate_cuda_telemetry_absent_pass(
+    payload: dict[str, Any],
+    mode: str,
+    pass_name: str,
+) -> None:
+    """Reject stale telemetry fields when a report did not request capture."""
+
+    passes = _mapping(payload.get("passes"), f"{mode}.passes")
+    current = _mapping(passes.get(pass_name), f"{mode}.passes.{pass_name}")
+    prefill = _mapping(current.get("prefill"), f"{mode}.{pass_name}.prefill")
+    first = _mapping(current.get("first_token"), f"{mode}.{pass_name}.first_token")
+    decode = _mapping(current.get("decode"), f"{mode}.{pass_name}.decode")
+    per_token = decode.get("per_token")
+    if not isinstance(per_token, list):
+        raise ValueError(f"{mode}.{pass_name}.decode.per_token must be an array")
+
+    locations: list[tuple[dict[str, Any], str, str]] = [
+        (prefill, "cuda_event_timeline", "prefill.cuda_event_timeline"),
+        (first, "cuda_event_timeline", "first_token.cuda_event_timeline"),
+        (current, "cuda_overlap", "cuda_overlap"),
+    ]
+    for index, raw_token in enumerate(per_token):
+        token = _mapping(
+            raw_token,
+            f"{mode}.{pass_name}.decode.per_token[{index}]",
+        )
+        locations.append(
+            (
+                token,
+                "cuda_event_timeline",
+                f"decode.per_token[{index}].cuda_event_timeline",
+            )
+        )
+    for container, field, location in locations:
+        if field in container:
+            raise ValueError(
+                f"{mode}.{pass_name}.{location} must be absent when CUDA telemetry "
+                "is not requested"
+            )
+
+
 def _sum_metrics(rows: list[dict[str, int]]) -> dict[str, int]:
     return {field: sum(row[field] for row in rows) for field in ADDITIVE_PRIMITIVES}
 
@@ -622,6 +710,8 @@ def _validate_mode(payload: dict[str, Any], mode: str) -> dict[str, Any]:
         )
         if telemetry_requested:
             _validate_cuda_telemetry_pass(payload, mode, pass_name)
+        else:
+            _validate_cuda_telemetry_absent_pass(payload, mode, pass_name)
         pass_results[pass_name] = {
             "wall_seconds": wall,
             "scopes": scopes,

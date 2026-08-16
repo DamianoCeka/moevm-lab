@@ -75,7 +75,10 @@ _PIPELINE_TIME_METRICS = (
     "storage_queue_seconds",
     "demand_wait_seconds",
 )
-_CUDA_TIMELINE_SCHEMA_VERSION = 1
+# The benchmark report itself remains schema v1.  Only the opt-in nested CUDA
+# telemetry contract is v2, because v1 did not prove captured H2D coverage.
+_CUDA_TIMELINE_SCHEMA_VERSION = 2
+_LEGACY_CUDA_TIMELINE_SCHEMA_VERSION = 1
 _CUDA_TIMELINE_METHOD = "cuda_events_v1"
 _CUDA_TIMELINE_SCOPE = "paged_expert_h2d_vs_expert_compute"
 _CUDA_TIMELINE_UNIT = "milliseconds"
@@ -741,11 +744,51 @@ def _timeline_span(
     )
 
 
+def _validate_timeline_coverage(
+    timeline: dict[str, Any],
+    *,
+    h2d_span_count: int,
+    name: str,
+) -> None:
+    """Require capture-local cache accounting to cover every raw H2D span."""
+
+    coverage = _telemetry_mapping(timeline.get("coverage"), f"{name}.coverage")
+    cache_transfer_loads_delta = _telemetry_integer(
+        coverage.get("cache_transfer_loads_delta"),
+        f"{name}.coverage.cache_transfer_loads_delta",
+    )
+    reported_h2d_span_count = _telemetry_integer(
+        coverage.get("h2d_span_count"),
+        f"{name}.coverage.h2d_span_count",
+    )
+    if reported_h2d_span_count != h2d_span_count:
+        raise RuntimeError(
+            f"{name}.coverage.h2d_span_count is inconsistent with raw H2D spans"
+        )
+    if cache_transfer_loads_delta != h2d_span_count:
+        raise RuntimeError(
+            f"{name}.coverage.cache_transfer_loads_delta is inconsistent with raw H2D spans"
+        )
+
+
+def _require_covered_timeline_schema_version(value: object, name: str) -> None:
+    """Reject the legacy timeline contract instead of treating it as coverage."""
+
+    schema_version = _telemetry_integer(value, name)
+    if schema_version == _LEGACY_CUDA_TIMELINE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{name}=1 is legacy-unverified; covered CUDA telemetry requires "
+            f"schema_version={_CUDA_TIMELINE_SCHEMA_VERSION}"
+        )
+    if schema_version != _CUDA_TIMELINE_SCHEMA_VERSION:
+        raise RuntimeError(f"{name} must be {_CUDA_TIMELINE_SCHEMA_VERSION}")
+
+
 def _validate_cuda_timeline_call(
     raw: object,
     name: str,
 ) -> tuple[str, dict[str, Any], str | None]:
-    """Fail closed unless one runtime capture matches the public v1 schema.
+    """Fail closed unless one runtime capture matches the covered v2 schema.
 
     A future worker-aware runtime can append H2D spans on its own stream: the
     schema deliberately validates their metadata and shared-origin timing but
@@ -753,11 +796,10 @@ def _validate_cuda_timeline_call(
     """
 
     timeline = _telemetry_mapping(raw, name)
-    if (
-        _telemetry_integer(timeline.get("schema_version"), f"{name}.schema_version")
-        != _CUDA_TIMELINE_SCHEMA_VERSION
-    ):
-        raise RuntimeError(f"{name}.schema_version must be 1")
+    _require_covered_timeline_schema_version(
+        timeline.get("schema_version"),
+        f"{name}.schema_version",
+    )
     if timeline.get("complete") is not True:
         raise RuntimeError(
             f"{name} must be complete{_incomplete_timeline_detail(timeline)}"
@@ -795,6 +837,11 @@ def _validate_cuda_timeline_call(
     expected_summary.pop("intervals")
     if not _timeline_summary_equal(timeline.get("summary"), expected_summary):
         raise RuntimeError(f"{name}.summary is not derived from its raw spans")
+    _validate_timeline_coverage(
+        timeline,
+        h2d_span_count=len(transfers),
+        name=name,
+    )
 
     has_both_lanes = bool(transfers) and bool(compute)
     reason = timeline.get("reason")
