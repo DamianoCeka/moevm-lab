@@ -739,8 +739,10 @@ def _validate_mode(payload: dict[str, Any], mode: str) -> dict[str, Any]:
         ),
         f"{mode}.pending_loads_peak",
     )
-    if pending_peak > staging_slots + 1:
-        raise ValueError(f"{mode}: pending-load peak exceeds the bounded pipeline")
+    if pending_peak > 2 * staging_slots:
+        raise ValueError(
+            f"{mode}: pending-load peak exceeds the two-window benchmark-forward bound"
+        )
     return {
         "source": source,
         "runtime": runtime,

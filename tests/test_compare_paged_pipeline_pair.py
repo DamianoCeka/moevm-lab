@@ -368,6 +368,26 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         self.assertEqual(retained["saving_seconds"], 1.5)
         self.assertAlmostEqual(retained["saving_fraction"], 0.25)
 
+    def test_pending_load_peak_allows_two_staging_windows(self) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        async_["runtime"]["final_metrics"]["pending_loads_peak"] = 4
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
+    def test_pending_load_peak_rejects_above_two_staging_windows(self) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        async_["runtime"]["final_metrics"]["pending_loads_peak"] = 5
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "pending-load peak exceeds the two-window benchmark-forward bound",
+        ):
+            _COMPARATOR.compare_reports(sync, async_)
+
     def test_mode_specific_resolved_pipeline_budget_is_not_an_identity_mismatch(
         self,
     ) -> None:
