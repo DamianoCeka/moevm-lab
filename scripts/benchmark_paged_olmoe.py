@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one controlled offline OLMoE paged-runtime cold/warm smoke benchmark."""
+"""Run one controlled offline paged-runtime cold/warm smoke benchmark."""
 
 from __future__ import annotations
 
@@ -15,22 +15,18 @@ import platform
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from moevm.olmoe_assets import (
-    PINNED_MODEL_ID,
-    PINNED_REVISION,
-    PINNED_SHARD_SHA256,
-    PINNED_SHARD_SIZES,
-)
+from moevm import olmoe_assets, qwen2_moe_assets
 from moevm.pipeline_profile import (
     load_pipeline_profile,
     result_binding,
@@ -91,6 +87,97 @@ _CUDA_TIMELINE_AGGREGATION = (
 )
 
 
+class _CheckpointProfile(NamedTuple):
+    """Fail-closed checkpoint identity and model-shape contract."""
+
+    key: str
+    display_name: str
+    model_id: str
+    revision: str
+    license_name: str
+    model_type: str
+    layers: int
+    experts_per_layer: int
+    top_k: int
+    hidden_size: int
+    expert_intermediate_size_attr: str
+    expert_intermediate_size: int
+    required_files: tuple[str, ...]
+    file_sha256: Mapping[str, str]
+    file_sizes: Mapping[str, int]
+    shard_sha256: Mapping[str, str]
+    shard_sizes: Mapping[str, int]
+    verify_snapshot: Callable[[Path], dict[str, dict[str, int | str]]]
+    verification_scope: str
+    reference_required: bool = False
+    sync_only: bool = False
+
+
+_OLMOE_PROFILE = _CheckpointProfile(
+    key="olmoe",
+    display_name="OLMoE",
+    model_id=olmoe_assets.PINNED_MODEL_ID,
+    revision=olmoe_assets.PINNED_REVISION,
+    license_name="Apache-2.0",
+    model_type="olmoe",
+    layers=16,
+    experts_per_layer=64,
+    top_k=8,
+    hidden_size=2048,
+    expert_intermediate_size_attr="intermediate_size",
+    expert_intermediate_size=1024,
+    required_files=olmoe_assets.REQUIRED_SNAPSHOT_FILES,
+    file_sha256=olmoe_assets.PINNED_SHARD_SHA256,
+    file_sizes=olmoe_assets.PINNED_SHARD_SIZES,
+    shard_sha256=olmoe_assets.PINNED_SHARD_SHA256,
+    shard_sizes=olmoe_assets.PINNED_SHARD_SIZES,
+    verify_snapshot=olmoe_assets.verify_pinned_snapshot,
+    verification_scope="weight_shards",
+)
+_QWEN2_MOE_PROFILE = _CheckpointProfile(
+    key="qwen2-moe",
+    display_name="Qwen2MoE",
+    model_id=qwen2_moe_assets.PINNED_MODEL_ID,
+    revision=qwen2_moe_assets.PINNED_REVISION,
+    license_name="Tongyi Qianwen License Agreement",
+    model_type="qwen2_moe",
+    layers=24,
+    experts_per_layer=60,
+    top_k=4,
+    hidden_size=2048,
+    expert_intermediate_size_attr="moe_intermediate_size",
+    expert_intermediate_size=1408,
+    required_files=qwen2_moe_assets.REQUIRED_SNAPSHOT_FILES,
+    file_sha256=qwen2_moe_assets.PINNED_FILE_SHA256,
+    file_sizes=qwen2_moe_assets.PINNED_FILE_SIZES,
+    shard_sha256=qwen2_moe_assets.PINNED_SHARD_SHA256,
+    shard_sizes=qwen2_moe_assets.PINNED_SHARD_SIZES,
+    verify_snapshot=qwen2_moe_assets.verify_pinned_snapshot,
+    verification_scope="full_required_file_manifest",
+    reference_required=True,
+    sync_only=True,
+)
+_CHECKPOINT_PROFILES = {
+    profile.key: profile for profile in (_OLMOE_PROFILE, _QWEN2_MOE_PROFILE)
+}
+
+# Backward-compatible aliases used by the OLMoE-default CLI and its tests.
+PINNED_MODEL_ID = _OLMOE_PROFILE.model_id
+PINNED_REVISION = _OLMOE_PROFILE.revision
+PINNED_SHARD_SHA256 = _OLMOE_PROFILE.shard_sha256
+PINNED_SHARD_SIZES = _OLMOE_PROFILE.shard_sizes
+
+
+def _checkpoint_profile(key: str) -> _CheckpointProfile:
+    try:
+        return _CHECKPOINT_PROFILES[key]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_CHECKPOINT_PROFILES))
+        raise ValueError(
+            f"unsupported checkpoint profile {key!r}; supported: {supported}"
+        ) from exc
+
+
 def _bounded_integer(name: str, minimum: int, maximum: int):
     def parse(raw: str) -> int:
         try:
@@ -109,9 +196,21 @@ def _bounded_integer(name: str, minimum: int, maximum: int):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--checkpoint",
+        choices=tuple(sorted(_CHECKPOINT_PROFILES)),
+        default="olmoe",
+        help=(
+            "Pinned checkpoint profile. Qwen2-MoE is a synchronous, "
+            "reference-gated correctness smoke only."
+        ),
+    )
+    parser.add_argument(
         "--snapshot",
         required=True,
-        help=f"Local snapshot directory named {PINNED_REVISION}; no download occurs.",
+        help=(
+            "Local snapshot directory named for the selected pinned revision; "
+            "no download occurs."
+        ),
     )
     parser.add_argument("--output", required=True, help="Create-only JSON result path.")
     parser.add_argument(
@@ -162,7 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--slots-per-layer",
         type=_bounded_integer("slots-per-layer", 1, 48),
         default=32,
-        help="Independent GPU slots in each of 16 layers (32 = 6 GiB).",
+        help=(
+            "Independent GPU expert slots per sparse layer; select a VRAM-safe "
+            "value for the checkpoint."
+        ),
     )
     parser.add_argument(
         "--hotset-json",
@@ -201,6 +303,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    profile = _checkpoint_profile(args.checkpoint)
+    if profile.sync_only and args.pipeline != "sync":
+        raise ValueError(f"{profile.display_name} only supports --pipeline sync")
+    if profile.reference_required and not args.reference_metadata:
+        raise ValueError(
+            f"{profile.display_name} requires --reference-metadata for correctness"
+        )
+    if profile.reference_required and args.teacher_force_reference:
+        raise ValueError(
+            f"{profile.display_name} correctness acceptance requires "
+            "autoregressive exact matching; --teacher-force-reference is not allowed"
+        )
+    if args.slots_per_layer > profile.experts_per_layer:
+        raise ValueError(
+            "slots-per-layer cannot exceed the checkpoint expert count "
+            f"({profile.experts_per_layer})"
+        )
     if args.prompt is not None and not args.prompt.strip():
         raise ValueError("prompt cannot be empty")
     if args.prompt is not None and args.workload_file:
@@ -259,19 +378,27 @@ def re_fullmatch_cuda(device: str) -> bool:
     return index.isdigit() and int(index) >= 0
 
 
-def _validate_snapshot(snapshot: Path) -> Path:
+def _validate_snapshot(
+    snapshot: Path,
+    *,
+    profile: _CheckpointProfile = _OLMOE_PROFILE,
+) -> Path:
     resolved = snapshot.expanduser().resolve()
     if not resolved.is_dir():
         raise FileNotFoundError(f"snapshot directory not found: {resolved}")
-    if resolved.name != PINNED_REVISION:
+    if resolved.name != profile.revision:
         raise ValueError(
-            f"snapshot directory must be the pinned revision {PINNED_REVISION}"
+            f"snapshot directory must be the pinned revision {profile.revision}"
         )
     required = (
-        "config.json",
-        "model.safetensors.index.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
+        (
+            "config.json",
+            "model.safetensors.index.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        )
+        if profile.key == "olmoe"
+        else profile.required_files
     )
     for filename in required:
         if not (resolved / filename).is_file():
@@ -321,6 +448,20 @@ def _close_store_and_verify_pinned_shards(
     return _verify_pinned_shards(snapshot)
 
 
+def _close_store_and_verify_checkpoint(
+    store: Any,
+    snapshot: Path,
+    *,
+    profile: _CheckpointProfile,
+) -> dict[str, dict[str, int | str]]:
+    """Close mappings, then apply the selected profile's integrity contract."""
+
+    if profile.key == "olmoe":
+        return _close_store_and_verify_pinned_shards(store, snapshot)
+    store.close()
+    return profile.verify_snapshot(snapshot)
+
+
 def _validate_pinned_shard_files(snapshot: Path) -> dict[str, int]:
     sizes: dict[str, int] = {}
     for filename, expected_size in PINNED_SHARD_SIZES.items():
@@ -337,12 +478,80 @@ def _validate_pinned_shard_files(snapshot: Path) -> dict[str, int]:
     return sizes
 
 
+def _validate_pinned_checkpoint_files(
+    snapshot: Path,
+    *,
+    profile: _CheckpointProfile,
+) -> dict[str, int]:
+    """Size-check the profile's preflight manifest without warming file contents."""
+
+    if profile.key == "olmoe":
+        return _validate_pinned_shard_files(snapshot)
+    if set(profile.file_sizes) != set(profile.file_sha256):
+        raise RuntimeError(
+            f"{profile.display_name} checkpoint hash and size manifests disagree"
+        )
+    sizes: dict[str, int] = {}
+    for filename, expected_size in profile.file_sizes.items():
+        checkpoint_path = snapshot / filename
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"checkpoint file not found: {checkpoint_path}")
+        actual_size = checkpoint_path.stat().st_size
+        if actual_size != expected_size:
+            raise RuntimeError(
+                f"checkpoint size mismatch for {filename}: "
+                f"{actual_size} != {expected_size}"
+            )
+        sizes[filename] = actual_size
+    return sizes
+
+
+def _preflight_checkpoint_integrity(
+    snapshot: Path,
+    *,
+    profile: _CheckpointProfile,
+) -> tuple[dict[str, int], dict[str, dict[str, int | str]] | None]:
+    """Verify Qwen's complete manifest before any checkpoint content is consumed."""
+
+    sizes = _validate_pinned_checkpoint_files(snapshot, profile=profile)
+    if profile.key == "olmoe":
+        return sizes, None
+
+    verified = profile.verify_snapshot(snapshot)
+    if set(verified) != set(profile.file_sha256):
+        raise RuntimeError(
+            f"{profile.display_name} preflight did not verify the full manifest"
+        )
+    for filename, expected_digest in profile.file_sha256.items():
+        evidence = verified.get(filename)
+        if not isinstance(evidence, Mapping):
+            raise RuntimeError(
+                f"{profile.display_name} preflight evidence is invalid for {filename}"
+            )
+        if evidence.get("size_bytes") != profile.file_sizes[filename]:
+            raise RuntimeError(
+                f"{profile.display_name} preflight size evidence does not match "
+                f"for {filename}"
+            )
+        actual_digest = evidence.get("sha256")
+        if (
+            not isinstance(actual_digest, str)
+            or actual_digest.lower() != expected_digest.lower()
+        ):
+            raise RuntimeError(
+                f"{profile.display_name} preflight SHA-256 evidence does not match "
+                f"for {filename}"
+            )
+    return sizes, verified
+
+
 def _load_hotsets(
     path: Path,
     *,
     layers: tuple[int, ...],
     experts_per_layer: int,
     slots_per_layer: int,
+    profile: _CheckpointProfile = _OLMOE_PROFILE,
 ) -> tuple[dict[int, tuple[int, ...]], str]:
     raw_bytes = path.read_bytes()
     payload = json.loads(raw_bytes)
@@ -350,9 +559,9 @@ def _load_hotsets(
         raise ValueError("hotset JSON must be an object")
     if payload.get("schema_version") != 1:
         raise ValueError("hotset JSON schema_version must be 1")
-    if payload.get("model_id") != PINNED_MODEL_ID:
+    if payload.get("model_id") != profile.model_id:
         raise ValueError("hotset JSON model_id does not match the pinned model")
-    if payload.get("revision") != PINNED_REVISION:
+    if payload.get("revision") != profile.revision:
         raise ValueError("hotset JSON revision does not match the pinned revision")
     hotsets = payload.get("hotsets")
     if not isinstance(hotsets, dict):
@@ -395,6 +604,7 @@ def _load_reference_metadata(
     workload_id: str,
     prompt: str,
     max_new_tokens: int,
+    profile: _CheckpointProfile = _OLMOE_PROFILE,
 ) -> dict[str, Any]:
     raw_bytes = path.read_bytes()
     payload = json.loads(raw_bytes)
@@ -407,13 +617,27 @@ def _load_reference_metadata(
         raise ValueError(
             "reference metadata model/workload/generation objects are required"
         )
-    if model.get("id") != PINNED_MODEL_ID:
+    if model.get("id") != profile.model_id:
         raise ValueError("reference metadata model id does not match")
     if (
-        model.get("requested_revision") != PINNED_REVISION
-        or model.get("resolved_revision") != PINNED_REVISION
+        model.get("requested_revision") != profile.revision
+        or model.get("resolved_revision") != profile.revision
     ):
         raise ValueError("reference metadata revision does not match")
+    if profile.reference_required:
+        if model.get("license") != profile.license_name:
+            raise ValueError("reference metadata checkpoint license does not match")
+        license_notice = model.get("license_notice")
+        if not isinstance(license_notice, str) or not license_notice.strip():
+            raise ValueError("reference metadata checkpoint license notice is required")
+        if model.get("checkpoint_files_sha256") != dict(profile.file_sha256):
+            raise ValueError(
+                "reference metadata full checkpoint manifest does not match"
+            )
+        if model.get("checkpoint_shards_sha256") != dict(profile.shard_sha256):
+            raise ValueError(
+                "reference metadata checkpoint shard manifest does not match"
+            )
     if workload.get("id") != workload_id:
         raise ValueError("reference metadata workload id does not match")
     if workload.get("prompt_sha256") != _prompt_sha256(prompt):
@@ -433,6 +657,10 @@ def _load_reference_metadata(
     ):
         raise ValueError(
             "reference generated_token_ids must be a non-empty integer array"
+        )
+    if len(token_ids) < max_new_tokens:
+        raise ValueError(
+            "reference generated_token_ids must contain at least max_new_tokens IDs"
         )
     token_prefix = token_ids[:max_new_tokens]
     return {
@@ -1247,9 +1475,16 @@ def _total_checkpoint_bytes(snapshot: Path) -> int:
     return total_size
 
 
-def _validate_model_shape(config: Any, store: Any) -> None:
-    if config.model_type != "olmoe":
-        raise ValueError(f"expected olmoe config, got {config.model_type}")
+def _validate_model_shape(
+    config: Any,
+    store: Any,
+    *,
+    profile: _CheckpointProfile = _OLMOE_PROFILE,
+) -> None:
+    if config.model_type != profile.model_type:
+        raise ValueError(
+            f"expected {profile.model_type} config, got {config.model_type}"
+        )
     if tuple(range(config.num_hidden_layers)) != store.layers:
         raise ValueError("checkpoint expert layers do not match the model config")
     if any(
@@ -1257,19 +1492,54 @@ def _validate_model_shape(config: Any, store: Any) -> None:
         for layer in store.layers
     ):
         raise ValueError("checkpoint expert counts do not match the model config")
+    expert_intermediate_size = getattr(
+        config,
+        profile.expert_intermediate_size_attr,
+        None,
+    )
     if (
         config.hidden_size != store.spec.hidden_size
-        or config.intermediate_size != store.spec.intermediate_size
+        or expert_intermediate_size != store.spec.intermediate_size
     ):
         raise ValueError("checkpoint expert shapes do not match the model config")
-    if config.num_hidden_layers != 16:
-        raise ValueError("pinned OLMoE must have exactly 16 layers")
-    if config.num_experts != 64 or config.num_experts_per_tok != 8:
-        raise ValueError("pinned OLMoE must have 64 experts and top-8 routing")
-    if config.hidden_size != 2048 or config.intermediate_size != 1024:
-        raise ValueError("pinned OLMoE dimensions are not 2048/1024")
+    if config.num_hidden_layers != profile.layers:
+        raise ValueError(
+            f"pinned {profile.display_name} must have exactly {profile.layers} layers"
+        )
+    if (
+        config.num_experts != profile.experts_per_layer
+        or config.num_experts_per_tok != profile.top_k
+    ):
+        raise ValueError(
+            f"pinned {profile.display_name} must have "
+            f"{profile.experts_per_layer} experts and top-{profile.top_k} routing"
+        )
+    if (
+        config.hidden_size != profile.hidden_size
+        or expert_intermediate_size != profile.expert_intermediate_size
+    ):
+        raise ValueError(
+            f"pinned {profile.display_name} dimensions are not "
+            f"{profile.hidden_size}/{profile.expert_intermediate_size}"
+        )
     if config.hidden_act != "silu":
-        raise ValueError("pinned OLMoE must use SiLU experts")
+        raise ValueError(f"pinned {profile.display_name} must use SiLU experts")
+
+
+def _attach_checkpoint_runtime(
+    model: Any,
+    runtime: Any,
+    *,
+    profile: _CheckpointProfile,
+    generic_attach: Callable[[Any, Any], Any],
+    olmoe_attach: Callable[[Any, Any], Any],
+) -> None:
+    """Keep the legacy OLMoE wrapper while dispatching other supported models."""
+
+    if profile.key == "olmoe":
+        olmoe_attach(model, runtime)
+    else:
+        generic_attach(model, runtime)
 
 
 def _write_json_create_only(path: Path, payload: object) -> None:
@@ -1281,6 +1551,7 @@ def _write_json_create_only(path: Path, payload: object) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     _validate_args(args)
+    profile = _checkpoint_profile(args.checkpoint)
     source = _source_provenance(best_effort=args.demo_mode)
     if source["tree_clean"] is not True and not args.demo_mode:
         raise RuntimeError("benchmark evidence requires a clean Git working tree")
@@ -1291,14 +1562,24 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         pipeline_profile, pipeline_profile_sha256 = load_pipeline_profile(
             Path(args.pipeline_profile)
         )
-    snapshot = _validate_snapshot(Path(args.snapshot))
+    snapshot = _validate_snapshot(Path(args.snapshot), profile=profile)
     output_path = Path(args.output).expanduser().resolve()
     if output_path.is_relative_to(snapshot):
         raise ValueError("output must not be written inside the read-only snapshot")
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    shard_sizes = _validate_pinned_shard_files(snapshot)
+    preflight_verification_started = time.perf_counter()
+    checkpoint_file_sizes, preflight_checkpoint_verification = (
+        _preflight_checkpoint_integrity(
+            snapshot,
+            profile=profile,
+        )
+    )
+    preflight_verification_seconds = (
+        time.perf_counter() - preflight_verification_started
+    )
+    shard_sizes = {name: checkpoint_file_sizes[name] for name in profile.shard_sizes}
     reference_metadata = None
     if args.reference_metadata:
         reference_metadata = _load_reference_metadata(
@@ -1306,6 +1587,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             workload_id=args.workload_id,
             prompt=prompt,
             max_new_tokens=args.max_new_tokens,
+            profile=profile,
         )
     forced_token_ids = None
     if args.teacher_force_reference:
@@ -1324,6 +1606,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         ExpertSlotCache,
         PagedExpertRuntime,
         SafetensorExpertStore,
+        attach_transformers_moe_runtime,
         attach_transformers_olmoe_runtime,
         load_non_expert_weights_into_meta_model,
         validate_transformers_paged_model,
@@ -1331,7 +1614,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     from moevm.types import ExpertKey
 
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for the full paged OLMoE harness")
+        raise RuntimeError(
+            f"CUDA is required for the full paged {profile.display_name} harness"
+        )
     if importlib.metadata.version("transformers") != "5.14.1":
         raise RuntimeError("the paged integration requires transformers==5.14.1")
     device = torch.device(args.device)
@@ -1355,9 +1640,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             config_started = time.perf_counter()
             config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
             tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
-            _validate_model_shape(config, store)
+            _validate_model_shape(config, store, profile=profile)
             if store.spec.dtype != torch.bfloat16:
-                raise RuntimeError("the pinned OLMoE expert store must be BF16")
+                raise RuntimeError(
+                    f"the pinned {profile.display_name} expert store must be BF16"
+                )
             config_seconds = time.perf_counter() - config_started
 
             encoded = tokenizer(
@@ -1383,6 +1670,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     layers=store.layers,
                     experts_per_layer=config.num_experts,
                     slots_per_layer=args.slots_per_layer,
+                    profile=profile,
                 )
             static_keys = tuple(
                 ExpertKey(layer, expert)
@@ -1430,15 +1718,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 expected_binding = result_binding(
                     {
                         "model": {
-                            "model_id": PINNED_MODEL_ID,
-                            "revision": PINNED_REVISION,
+                            "model_id": profile.model_id,
+                            "revision": profile.revision,
                             "dtype": str(store.spec.dtype),
                             "layers": len(store.layers),
                             "experts_per_layer": config.num_experts,
                             "top_k": config.num_experts_per_tok,
                             "shards": {
                                 name: {"sha256": digest}
-                                for name, digest in sorted(PINNED_SHARD_SHA256.items())
+                                for name, digest in sorted(profile.shard_sha256.items())
                             },
                         },
                         "runtime": {
@@ -1506,7 +1794,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             if args.pipeline == "auto":
                 cache.set_pipeline_mode(pipeline_schedule["cold_expert_cache"])
             runtime = PagedExpertRuntime(cache)
-            attach_transformers_olmoe_runtime(model, runtime)
+            _attach_checkpoint_runtime(
+                model,
+                runtime,
+                profile=profile,
+                generic_attach=attach_transformers_moe_runtime,
+                olmoe_attach=attach_transformers_olmoe_runtime,
+            )
             cache_allocation_seconds = time.perf_counter() - cache_started
 
             non_expert_started = time.perf_counter()
@@ -1637,11 +1931,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             cache.wait_idle()
             cache.close()
             verification_started = time.perf_counter()
-            shard_verification = _close_store_and_verify_pinned_shards(
+            checkpoint_verification = _close_store_and_verify_checkpoint(
                 store,
                 snapshot,
+                profile=profile,
             )
             verification_seconds = time.perf_counter() - verification_started
+            shard_verification = {
+                name: checkpoint_verification[name] for name in profile.shard_sha256
+            }
             comparison = {
                 "repeat_over_cold_speedup": _ratio(
                     float(cold["total_wall_seconds"]),
@@ -1680,6 +1978,35 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             if comparison["repeat_throughput_change"] is not None:
                 comparison["repeat_throughput_change"] -= 1.0
 
+            model_report = {
+                "model_id": profile.model_id,
+                "revision": profile.revision,
+                "snapshot": str(snapshot),
+                "shards": shard_verification,
+                "preflight_shard_sizes": shard_sizes,
+                "hash_verification_seconds": verification_seconds,
+                "dtype": str(store.spec.dtype),
+                "layers": len(store.layers),
+                "experts_per_layer": config.num_experts,
+                "top_k": config.num_experts_per_tok,
+            }
+            if profile.key != "olmoe":
+                model_report.update(
+                    {
+                        "checkpoint_profile": profile.key,
+                        "license": profile.license_name,
+                        "verification_scope": profile.verification_scope,
+                        "preflight_full_manifest_verified": (
+                            preflight_checkpoint_verification is not None
+                        ),
+                        "preflight_hash_verification_seconds": (
+                            preflight_verification_seconds
+                        ),
+                        "verified_files": checkpoint_verification,
+                        "preflight_file_sizes": checkpoint_file_sizes,
+                    }
+                )
+
             return {
                 "schema_version": 1,
                 "status": "ok",
@@ -1688,10 +2015,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "label": (
                         "interactive local hardware demo; not benchmark evidence"
                         if args.demo_mode
-                        else "single-workload controlled paged-runtime smoke; "
-                        "not a general throughput claim"
+                        else (
+                            "full-checkpoint reference-gated correctness smoke; "
+                            "not benchmark evidence or a performance claim"
+                            if profile.key == "qwen2-moe"
+                            else "single-workload controlled paged-runtime smoke; "
+                            "not a general throughput claim"
+                        )
                     ),
-                    "publishable_benchmark_evidence": not args.demo_mode,
+                    "publishable_benchmark_evidence": (
+                        not args.demo_mode and profile.key == "olmoe"
+                    ),
                     "offline_local_only": True,
                     "limitations": [
                         *(
@@ -1699,6 +2033,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                 "Demo mode permits best-effort Git provenance and must not be published as benchmark evidence."
                             ]
                             if args.demo_mode
+                            else []
+                        ),
+                        *(
+                            [
+                                "Qwen2-MoE support is provisional correctness-smoke coverage; timings from this path are not publishable benchmark evidence."
+                            ]
+                            if profile.key == "qwen2-moe"
                             else []
                         ),
                         "SHA-256 verification is intentionally after timed passes to avoid warming every shard first.",
@@ -1736,18 +2077,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                     ],
                 },
-                "model": {
-                    "model_id": PINNED_MODEL_ID,
-                    "revision": PINNED_REVISION,
-                    "snapshot": str(snapshot),
-                    "shards": shard_verification,
-                    "preflight_shard_sizes": shard_sizes,
-                    "hash_verification_seconds": verification_seconds,
-                    "dtype": str(store.spec.dtype),
-                    "layers": len(store.layers),
-                    "experts_per_layer": config.num_experts,
-                    "top_k": config.num_experts_per_tok,
-                },
+                "model": model_report,
                 "runtime": {
                     "device": str(device),
                     "device_name": device_name,
@@ -1846,13 +2176,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         if not _is_cuda_oom(exc):
             raise
+        profile = _checkpoint_profile(args.checkpoint)
         report = {
             "schema_version": 1,
             "status": "cuda_oom",
             "created_at": datetime.now(UTC).isoformat(),
             "model": {
-                "model_id": PINNED_MODEL_ID,
-                "revision": PINNED_REVISION,
+                "model_id": profile.model_id,
+                "revision": profile.revision,
             },
             "error": str(exc),
             "evidence": {

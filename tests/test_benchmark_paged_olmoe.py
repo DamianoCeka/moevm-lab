@@ -135,6 +135,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
         _HARNESS._validate_args(args)
 
+        self.assertEqual(args.checkpoint, "olmoe")
         self.assertEqual(args.device, "cuda:0")
         self.assertEqual(args.policy, "lru")
         self.assertEqual(args.pipeline, "sync")
@@ -160,6 +161,53 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         parse_max_new_tokens = _HARNESS._bounded_integer("max-new-tokens", 1, 64)
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_max_new_tokens("65")
+
+    def test_qwen_profile_is_reference_gated_and_sync_only(self) -> None:
+        reference_path = self.root / "qwen-reference.json"
+        args = self._args(
+            "--checkpoint",
+            "qwen2-moe",
+            "--reference-metadata",
+            str(reference_path),
+        )
+
+        _HARNESS._validate_args(args)
+
+        profile = _HARNESS._checkpoint_profile(args.checkpoint)
+        self.assertEqual(profile.model_id, "Qwen/Qwen1.5-MoE-A2.7B")
+        self.assertEqual(profile.model_type, "qwen2_moe")
+        self.assertEqual(profile.layers, 24)
+        self.assertEqual(profile.experts_per_layer, 60)
+        self.assertEqual(profile.top_k, 4)
+        self.assertEqual(profile.expert_intermediate_size, 1408)
+        self.assertTrue(profile.reference_required)
+        self.assertTrue(profile.sync_only)
+
+        with self.assertRaisesRegex(ValueError, "requires --reference-metadata"):
+            _HARNESS._validate_args(self._args("--checkpoint", "qwen2-moe"))
+        with self.assertRaisesRegex(ValueError, "only supports --pipeline sync"):
+            _HARNESS._validate_args(
+                self._args(
+                    "--checkpoint",
+                    "qwen2-moe",
+                    "--reference-metadata",
+                    str(reference_path),
+                    "--pipeline",
+                    "async",
+                    "--staging-slots",
+                    "2",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "autoregressive exact matching"):
+            _HARNESS._validate_args(
+                self._args(
+                    "--checkpoint",
+                    "qwen2-moe",
+                    "--reference-metadata",
+                    str(reference_path),
+                    "--teacher-force-reference",
+                )
+            )
 
     def test_policy_and_device_validation_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires --hotset-json"):
@@ -264,6 +312,131 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                 expected_hashes={shard.name: "0" * 64},
             )
 
+    def test_qwen_snapshot_requires_the_full_pinned_manifest(self) -> None:
+        profile = _HARNESS._QWEN2_MOE_PROFILE
+        snapshot = self.root / profile.revision
+        snapshot.mkdir()
+        for filename in profile.required_files:
+            (snapshot / filename).write_bytes(b"")
+
+        self.assertEqual(
+            _HARNESS._validate_snapshot(snapshot, profile=profile),
+            snapshot.resolve(),
+        )
+
+        (snapshot / "LICENSE").unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "LICENSE"):
+            _HARNESS._validate_snapshot(snapshot, profile=profile)
+
+    def test_qwen_preflight_size_checks_every_manifest_file(self) -> None:
+        snapshot = self.root / "qwen-preflight"
+        snapshot.mkdir()
+        (snapshot / "LICENSE").write_bytes(b"")
+        (snapshot / "config.json").write_bytes(b"{}")
+        profile = _HARNESS._QWEN2_MOE_PROFILE._replace(
+            file_sha256={"LICENSE": "0" * 64, "config.json": "1" * 64},
+            file_sizes={"LICENSE": 0, "config.json": 2},
+        )
+
+        self.assertEqual(
+            _HARNESS._validate_pinned_checkpoint_files(
+                snapshot,
+                profile=profile,
+            ),
+            {"LICENSE": 0, "config.json": 2},
+        )
+
+        (snapshot / "config.json").unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "config.json"):
+            _HARNESS._validate_pinned_checkpoint_files(
+                snapshot,
+                profile=profile,
+            )
+
+    def test_qwen_preflight_requires_full_sha_evidence(self) -> None:
+        snapshot = self.root / "qwen-hash-preflight"
+        snapshot.mkdir()
+        checkpoint_file = snapshot / "config.json"
+        checkpoint_file.write_bytes(b"{}")
+        digest = hashlib.sha256(checkpoint_file.read_bytes()).hexdigest()
+        verify_calls: list[Path] = []
+
+        def verify(candidate: Path) -> dict[str, dict[str, int | str]]:
+            verify_calls.append(candidate)
+            return {
+                "config.json": {
+                    "sha256": digest,
+                    "size_bytes": 2,
+                }
+            }
+
+        profile = _HARNESS._QWEN2_MOE_PROFILE._replace(
+            file_sha256={"config.json": digest},
+            file_sizes={"config.json": 2},
+            verify_snapshot=verify,
+        )
+
+        sizes, verified = _HARNESS._preflight_checkpoint_integrity(
+            snapshot,
+            profile=profile,
+        )
+
+        self.assertEqual(sizes, {"config.json": 2})
+        self.assertEqual(verified["config.json"]["sha256"], digest)
+        self.assertEqual(verify_calls, [snapshot])
+
+        bad_profile = profile._replace(
+            verify_snapshot=lambda _snapshot: {
+                "config.json": {
+                    "sha256": "0" * 64,
+                    "size_bytes": 2,
+                }
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "SHA-256 evidence"):
+            _HARNESS._preflight_checkpoint_integrity(
+                snapshot,
+                profile=bad_profile,
+            )
+
+    def test_qwen_preflight_failure_blocks_all_checkpoint_use(self) -> None:
+        reference_path = self.root / "qwen-reference.json"
+        args = self._args(
+            "--checkpoint",
+            "qwen2-moe",
+            "--reference-metadata",
+            str(reference_path),
+        )
+        snapshot = self.root / "verified-snapshot"
+
+        with (
+            mock.patch.object(
+                _HARNESS,
+                "_source_provenance",
+                return_value={"tree_clean": True},
+            ),
+            mock.patch.object(_HARNESS, "_resolve_prompt", return_value="prompt"),
+            mock.patch.object(
+                _HARNESS,
+                "_validate_snapshot",
+                return_value=snapshot,
+            ),
+            mock.patch.object(
+                _HARNESS,
+                "_preflight_checkpoint_integrity",
+                side_effect=RuntimeError("pre-use integrity failure"),
+            ) as preflight,
+            mock.patch.object(_HARNESS, "_load_reference_metadata") as reference,
+            self.assertRaisesRegex(RuntimeError, "pre-use integrity failure"),
+        ):
+            _HARNESS.run_benchmark(args)
+
+        preflight.assert_called_once_with(
+            snapshot,
+            profile=_HARNESS._QWEN2_MOE_PROFILE,
+        )
+        reference.assert_not_called()
+
     def test_store_is_closed_before_checkpoint_verification(self) -> None:
         events: list[str] = []
 
@@ -285,6 +458,29 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
         self.assertEqual(events, ["close", "verify"])
         self.assertEqual(verified, {"verified": {}})
+
+    def test_qwen_store_is_closed_before_full_manifest_verification(self) -> None:
+        events: list[str] = []
+
+        class FakeStore:
+            @staticmethod
+            def close() -> None:
+                events.append("close")
+
+        profile = _HARNESS._QWEN2_MOE_PROFILE._replace(
+            verify_snapshot=lambda _snapshot: (
+                events.append("verify") or {"LICENSE": {"sha256": "0" * 64}}
+            )
+        )
+
+        verified = _HARNESS._close_store_and_verify_checkpoint(
+            FakeStore(),
+            self.root,
+            profile=profile,
+        )
+
+        self.assertEqual(events, ["close", "verify"])
+        self.assertEqual(verified, {"LICENSE": {"sha256": "0" * 64}})
 
     def test_hotset_is_revision_bound_and_leaves_dynamic_slot(self) -> None:
         hotset_path = self.root / "hotset.json"
@@ -334,6 +530,13 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
 
         self.assertEqual(loaded["generated_token_ids"], [187, 187])
         self.assertEqual(loaded["source_generated_token_count"], 3)
+        with self.assertRaisesRegex(ValueError, "at least max_new_tokens"):
+            _HARNESS._load_reference_metadata(
+                reference_path,
+                workload_id="python_code",
+                prompt=prompt,
+                max_new_tokens=4,
+            )
         payload = self._reference_payload(prompt)
         payload["generation"]["temperature"] = 0.7
         reference_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -344,6 +547,105 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                 prompt=prompt,
                 max_new_tokens=2,
             )
+
+    def test_qwen_reference_metadata_is_bound_to_the_qwen_pin(self) -> None:
+        profile = _HARNESS._QWEN2_MOE_PROFILE
+        prompt = "Explain sparse routing."
+        reference_path = self.root / "qwen-reference.json"
+        payload = {
+            "schema_version": 1,
+            "model": {
+                "id": profile.model_id,
+                "requested_revision": profile.revision,
+                "resolved_revision": profile.revision,
+                "license": profile.license_name,
+                "license_notice": "Third-party checkpoint license.",
+                "checkpoint_files_sha256": dict(profile.file_sha256),
+                "checkpoint_shards_sha256": dict(profile.shard_sha256),
+            },
+            "workload": {
+                "id": "single-smoke",
+                "prompt_sha256": _HARNESS._prompt_sha256(prompt),
+            },
+            "generation": {
+                "temperature": 0.0,
+                "generated_token_ids": [42, 43],
+            },
+        }
+        reference_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = _HARNESS._load_reference_metadata(
+            reference_path,
+            workload_id="single-smoke",
+            prompt=prompt,
+            max_new_tokens=2,
+            profile=profile,
+        )
+
+        self.assertEqual(loaded["generated_token_ids"], [42, 43])
+        payload["model"]["checkpoint_files_sha256"].pop("LICENSE")
+        reference_path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "full checkpoint manifest"):
+            _HARNESS._load_reference_metadata(
+                reference_path,
+                workload_id="single-smoke",
+                prompt=prompt,
+                max_new_tokens=2,
+                profile=profile,
+            )
+        with self.assertRaisesRegex(ValueError, "model id does not match"):
+            _HARNESS._load_reference_metadata(
+                reference_path,
+                workload_id="single-smoke",
+                prompt=prompt,
+                max_new_tokens=2,
+            )
+
+    def test_qwen_shape_uses_moe_intermediate_size_and_generic_attach(self) -> None:
+        profile = _HARNESS._QWEN2_MOE_PROFILE
+        config = SimpleNamespace(
+            model_type="qwen2_moe",
+            num_hidden_layers=24,
+            num_experts=60,
+            num_experts_per_tok=4,
+            hidden_size=2048,
+            intermediate_size=5632,
+            moe_intermediate_size=1408,
+            hidden_act="silu",
+        )
+
+        class FakeStore:
+            layers = tuple(range(24))
+            spec = SimpleNamespace(hidden_size=2048, intermediate_size=1408)
+
+            @staticmethod
+            def experts_in_layer(_layer: int) -> tuple[int, ...]:
+                return tuple(range(60))
+
+        _HARNESS._validate_model_shape(config, FakeStore(), profile=profile)
+
+        attach_calls: list[str] = []
+        _HARNESS._attach_checkpoint_runtime(
+            object(),
+            object(),
+            profile=profile,
+            generic_attach=lambda _model, _runtime: attach_calls.append("generic"),
+            olmoe_attach=lambda _model, _runtime: attach_calls.append("olmoe"),
+        )
+        self.assertEqual(attach_calls, ["generic"])
+
+        _HARNESS._attach_checkpoint_runtime(
+            object(),
+            object(),
+            profile=_HARNESS._OLMOE_PROFILE,
+            generic_attach=lambda _model, _runtime: attach_calls.append("generic"),
+            olmoe_attach=lambda _model, _runtime: attach_calls.append("olmoe"),
+        )
+        self.assertEqual(attach_calls, ["generic", "olmoe"])
+
+        config.moe_intermediate_size = 5632
+        with self.assertRaisesRegex(ValueError, "expert shapes"):
+            _HARNESS._validate_model_shape(config, FakeStore(), profile=profile)
 
     def test_metric_delta_uses_counter_differences_and_invariants(self) -> None:
         before = SimpleNamespace(

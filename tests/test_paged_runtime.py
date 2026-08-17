@@ -22,6 +22,7 @@ if torch is not None:
         ExpertSlotCache,
         PagedExpertRuntime,
         SafetensorExpertStore,
+        TransformersMoEAdapter,
         _cuda_timeline_payload,
         _CudaTimelineCapture,
         _CudaTimelineEventSpan,
@@ -1748,9 +1749,21 @@ class PagedRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             TypeError,
-            "unsupported Transformers MoE model type.*mixtral, olmoe",
+            "unsupported Transformers MoE model type.*mixtral, olmoe, qwen2_moe",
         ):
             transformers_moe_adapter_for_model(Model())
+
+    def test_transformers_adapter_rejects_boolean_expert_width(self) -> None:
+        class Config:
+            moe_intermediate_size = True
+
+        adapter = TransformersMoEAdapter(
+            "qwen2_moe",
+            "Qwen2MoE",
+            expert_intermediate_size_attr="moe_intermediate_size",
+        )
+        with self.assertRaisesRegex(TypeError, "no positive moe_intermediate_size"):
+            adapter.expert_intermediate_size(Config())
 
     def test_runtime_attaches_to_a_meta_initialized_olmoe(self) -> None:
         try:
@@ -1910,6 +1923,139 @@ class PagedRuntimeTests(unittest.TestCase):
                     use_cache=False,
                 ).logits
             torch.testing.assert_close(paged_logits, eager_logits)
+
+    def test_tiny_qwen2_moe_shared_expert_forward_matches_eager(self) -> None:
+        try:
+            from accelerate import init_empty_weights
+            from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+        except ImportError:
+            self.skipTest("requires accelerate and transformers")
+
+        torch.manual_seed(161803)
+        config = Qwen2MoeConfig(
+            vocab_size=32,
+            hidden_size=8,
+            intermediate_size=12,
+            moe_intermediate_size=4,
+            shared_expert_intermediate_size=8,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            num_experts=4,
+            num_experts_per_tok=2,
+            max_position_embeddings=32,
+            eos_token_id=None,
+            pad_token_id=1,
+        )
+        eager_model = Qwen2MoeForCausalLM(config).eval()
+        state = eager_model.state_dict()
+        checkpoint: dict[str, torch.Tensor] = {}
+        expert_parameter_names: set[str] = set()
+        for layer in range(config.num_hidden_layers):
+            gate_up_name = f"model.layers.{layer}.mlp.experts.gate_up_proj"
+            down_name = f"model.layers.{layer}.mlp.experts.down_proj"
+            expert_parameter_names.update((gate_up_name, down_name))
+            gate_up = state[gate_up_name]
+            down = state[down_name]
+            for expert in range(config.num_experts):
+                gate, up = gate_up[expert].chunk(2, dim=0)
+                prefix = f"model.layers.{layer}.mlp.experts.{expert}"
+                checkpoint[f"{prefix}.gate_proj.weight"] = gate.contiguous()
+                checkpoint[f"{prefix}.up_proj.weight"] = up.contiguous()
+                checkpoint[f"{prefix}.down_proj.weight"] = down[expert].contiguous()
+        for tensor_name, tensor in state.items():
+            if tensor_name not in expert_parameter_names:
+                checkpoint[tensor_name] = tensor.contiguous()
+
+        snapshot = self.snapshot / "tiny-qwen2-moe"
+        snapshot.mkdir()
+        shard_name = "model.safetensors"
+        save_file(checkpoint, snapshot / shard_name)
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "metadata": {},
+                    "weight_map": {
+                        tensor_name: shard_name for tensor_name in checkpoint
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        paged_config = Qwen2MoeConfig.from_dict(config.to_dict())
+        with init_empty_weights(include_buffers=False):
+            paged_model = Qwen2MoeForCausalLM(paged_config)
+        with SafetensorExpertStore(snapshot) as store:
+            runtime = PagedExpertRuntime(
+                ExpertSlotCache(
+                    store,
+                    capacity_per_layer=config.num_experts,
+                    device="cpu",
+                    policy=CachePolicy.LRU,
+                    pin_staging=False,
+                )
+            )
+            with self.assertRaisesRegex(
+                TypeError,
+                "expected an OLMoEForCausalLM-compatible model",
+            ):
+                attach_transformers_olmoe_runtime(paged_model, runtime)
+            paged_model.config.moe_intermediate_size += 1
+            with self.assertRaisesRegex(
+                ValueError,
+                "model dimensions do not match the expert store",
+            ):
+                attach_transformers_moe_runtime(
+                    paged_model,
+                    runtime,
+                    implementation="moevm_paged_tiny_qwen2_moe",
+                )
+            paged_model.config.moe_intermediate_size -= 1
+            adapter = attach_transformers_moe_runtime(
+                paged_model,
+                runtime,
+                implementation="moevm_paged_tiny_qwen2_moe",
+            )
+            self.assertEqual(adapter.model_type, "qwen2_moe")
+            loaded = load_non_expert_weights_into_meta_model(
+                paged_model,
+                store,
+                device="cpu",
+            )
+            paged_model.eval()
+
+            self.assertEqual(set(loaded), set(state) - expert_parameter_names)
+            validation = validate_transformers_paged_model(
+                paged_model,
+                store,
+                runtime=runtime,
+            )
+            self.assertEqual(validation["adapter"], "qwen2_moe")
+            self.assertEqual(validation["expert_meta_parameters"], 4)
+            self.assertTrue(
+                any("shared_expert" in tensor_name for tensor_name in loaded)
+            )
+
+            input_ids = torch.tensor([[2, 7, 11, 5]], dtype=torch.long)
+            attention_mask = torch.ones_like(input_ids)
+            with torch.no_grad():
+                eager_logits = eager_model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits
+                paged_logits = paged_model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits
+            torch.testing.assert_close(
+                paged_logits,
+                eager_logits,
+                rtol=0.0,
+                atol=0.0,
+            )
 
     def test_tiny_olmoe_meta_loader_forward_and_generate_match_eager(self) -> None:
         try:

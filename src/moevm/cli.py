@@ -12,6 +12,7 @@ from .analysis import (
     trace_analysis_console,
     write_trace_analysis,
 )
+from .checkpoint_inspector import CheckpointInspection, inspect_checkpoint
 from .config import ExperimentConfig, load_config
 from .machine_doctor import MachineReport, collect_machine_report
 from .placement_analysis import (
@@ -116,6 +117,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="emit the read-only --machine report as JSON",
+    )
+
+    inspect = subparsers.add_parser(
+        "inspect-checkpoint",
+        help="inspect a local MoE safetensors checkpoint without loading weights",
+    )
+    inspect.add_argument(
+        "path",
+        help="local snapshot directory, safetensors index, or unsharded file",
+    )
+    inspect.add_argument(
+        "--config",
+        help="optional local checkpoint config.json (default: beside checkpoint)",
+    )
+    inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the structural inspection as JSON",
     )
 
     analyze = subparsers.add_parser(
@@ -337,12 +356,88 @@ def _machine_doctor_console(report: MachineReport) -> str:
     return "\n".join(lines)
 
 
+def _checkpoint_inspection_console(report: CheckpointInspection) -> str:
+    """Render a concise structural summary without implying weight execution."""
+    model = report.model
+    experts = report.experts
+    shared = report.shared_expert
+    architecture = ", ".join(model.architectures) or "unspecified architecture"
+    sparse_layers = len(experts.layers)
+    lines = [
+        "Checkpoint inspection (local metadata and safetensors headers only).",
+        f"Model: {architecture}; type: {model.model_type}",
+        (
+            f"Layers: {model.hidden_layers:,} total; "
+            f"{sparse_layers:,} sparse expert layers"
+        ),
+        (
+            f"Experts: {experts.experts_per_layer:,} per layer; "
+            f"{experts.total_experts:,} inspected; top-{model.experts_per_token}"
+        ),
+        (
+            f"Expert bytes: {_format_bytes(experts.bytes_per_expert)} each; "
+            f"{_format_bytes(experts.logical_bytes)} logical total; "
+            f"dtype {experts.dtype}"
+        ),
+        (
+            f"Placement: {experts.colocated_experts:,}/{experts.total_experts:,} "
+            f"colocated; {experts.contiguous_experts:,}/{experts.total_experts:,} "
+            f"contiguous; {experts.split_experts:,} split"
+        ),
+    ]
+    if shared.present:
+        lines.append(
+            f"Shared expert: present on {len(shared.layers):,} layers; "
+            f"{_format_bytes(shared.bytes_per_layer)} per layer; "
+            f"{_format_bytes(shared.logical_bytes)} logical total; "
+            f"{_format_bytes(shared.gate_logical_bytes)} gates"
+        )
+    else:
+        lines.append("Shared expert: absent")
+    lines.extend(
+        [
+            (
+                f"Inventory: {len(report.shards):,} shards; "
+                f"{report.tensor_count:,} tensors; "
+                f"{_format_bytes(report.logical_tensor_bytes)} logical bytes"
+            ),
+            (
+                f"Read-only: {'yes' if report.read_only else 'no'}; "
+                f"network used: {'yes' if report.network_used else 'no'}; "
+                "model code executed: "
+                f"{'yes' if report.model_code_executed else 'no'}"
+            ),
+        ]
+    )
+    if report.warnings:
+        lines.append("Warnings:")
+        lines.extend(f"  - {warning}" for warning in report.warnings)
+    else:
+        lines.append("Warnings: none")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_windows_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "inspect-checkpoint":
+            report = inspect_checkpoint(args.path, config_path=args.config)
+            if args.json:
+                print(
+                    json.dumps(
+                        report.to_dict(),
+                        allow_nan=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(_checkpoint_inspection_console(report))
+            return 0
+
         config = load_config(args.config)
         if hasattr(args, "tokens"):
             config = config.with_tokens(args.tokens)

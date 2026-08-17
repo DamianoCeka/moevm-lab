@@ -3091,6 +3091,7 @@ class TransformersMoEAdapter:
 
     model_type: str
     display_name: str
+    expert_intermediate_size_attr: str = "intermediate_size"
 
     def layers(self, model: Any) -> Any:
         try:
@@ -3108,10 +3109,24 @@ class TransformersMoEAdapter:
                 f"expected {self.display_name} decoder layers with mlp.experts"
             ) from exc
 
+    def expert_intermediate_size(self, config: Any) -> int:
+        value = getattr(config, self.expert_intermediate_size_attr, None)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise TypeError(
+                f"{self.display_name} config has no positive "
+                f"{self.expert_intermediate_size_attr}"
+            )
+        return value
+
 
 _TRANSFORMERS_MOE_ADAPTERS = {
     "olmoe": TransformersMoEAdapter("olmoe", "OLMoE"),
     "mixtral": TransformersMoEAdapter("mixtral", "Mixtral"),
+    "qwen2_moe": TransformersMoEAdapter(
+        "qwen2_moe",
+        "Qwen2MoE",
+        expert_intermediate_size_attr="moe_intermediate_size",
+    ),
 }
 
 
@@ -3154,7 +3169,7 @@ def attach_transformers_moe_runtime(
         )
     if (
         config.hidden_size != store.spec.hidden_size
-        or config.intermediate_size != store.spec.intermediate_size
+        or adapter.expert_intermediate_size(config) != store.spec.intermediate_size
     ):
         raise ValueError("model dimensions do not match the expert store")
     for layer_index, layer_module in enumerate(layers):
@@ -3166,6 +3181,24 @@ def attach_transformers_moe_runtime(
         if experts.gate_up_proj.dtype != store.spec.dtype:
             raise ValueError(
                 f"model expert dtype does not match store layer {layer_index}"
+            )
+        expected_gate_up_shape = (
+            experts.num_experts,
+            2 * store.spec.intermediate_size,
+            store.spec.hidden_size,
+        )
+        expected_down_shape = (
+            experts.num_experts,
+            store.spec.hidden_size,
+            store.spec.intermediate_size,
+        )
+        if tuple(experts.gate_up_proj.shape) != expected_gate_up_shape:
+            raise ValueError(
+                f"model gate/up expert shape does not match store layer {layer_index}"
+            )
+        if tuple(experts.down_proj.shape) != expected_down_shape:
+            raise ValueError(
+                f"model down expert shape does not match store layer {layer_index}"
             )
     config._experts_implementation = implementation
     for layer_index, layer_module in enumerate(layers):
