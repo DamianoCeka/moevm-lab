@@ -21,6 +21,12 @@ laboratorio misura:
 - precisione del predictor;
 - throughput stimato dal modello temporale configurato.
 
+Il runtime ora separa inoltre l'integrazione del modello dal motore di memoria:
+OLMoE resta il checkpoint completo verificato, mentre un secondo adapter
+Mixtral supera un test end-to-end su un modello minuscolo con logits identici.
+Questo dimostra la portabilità dell'architettura, non ancora prestazioni o
+compatibilità con un checkpoint Mixtral pubblico completo.
+
 Il demo incluso ottiene un vantaggio sintetico, ma mostra anche più traffico PCIe. Questo è utile perché impedisce di presentare come innovazione un algoritmo che sposta soltanto il costo da una metrica all'altra.
 
 ## Stato v0.3

@@ -25,9 +25,11 @@ if torch is not None:
         _cuda_timeline_payload,
         _CudaTimelineCapture,
         _CudaTimelineEventSpan,
+        attach_transformers_moe_runtime,
         attach_transformers_olmoe_runtime,
         load_non_expert_weights_into_meta_model,
         register_transformers_paged_experts,
+        transformers_moe_adapter_for_model,
         transformers_paged_experts_forward,
         validate_transformers_paged_model,
     )
@@ -1737,6 +1739,19 @@ class PagedRuntimeTests(unittest.TestCase):
         expected = self._reference_forward(hidden_states, top_k_index, top_k_weights)
         torch.testing.assert_close(actual, expected)
 
+    def test_transformers_adapter_rejects_unknown_model_type(self) -> None:
+        class Config:
+            model_type = "unsupported_moe"
+
+        class Model:
+            config = Config()
+
+        with self.assertRaisesRegex(
+            TypeError,
+            "unsupported Transformers MoE model type.*mixtral, olmoe",
+        ):
+            transformers_moe_adapter_for_model(Model())
+
     def test_runtime_attaches_to_a_meta_initialized_olmoe(self) -> None:
         try:
             from accelerate import init_empty_weights
@@ -1784,6 +1799,117 @@ class PagedRuntimeTests(unittest.TestCase):
                 runtime,
                 implementation="moevm_paged_invalid_activation_test",
             )
+
+    def test_tiny_mixtral_meta_loader_forward_matches_eager(self) -> None:
+        try:
+            from accelerate import init_empty_weights
+            from transformers import MixtralConfig, MixtralForCausalLM
+        except ImportError:
+            self.skipTest("requires accelerate and transformers")
+
+        torch.manual_seed(271828)
+        config = MixtralConfig(
+            vocab_size=32,
+            hidden_size=8,
+            intermediate_size=4,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            num_local_experts=4,
+            num_experts_per_tok=2,
+            max_position_embeddings=32,
+            eos_token_id=None,
+            pad_token_id=1,
+        )
+        eager_model = MixtralForCausalLM(config).eval()
+        state = eager_model.state_dict()
+        checkpoint: dict[str, torch.Tensor] = {}
+        expert_parameter_names: set[str] = set()
+        for layer in range(config.num_hidden_layers):
+            gate_up_name = f"model.layers.{layer}.mlp.experts.gate_up_proj"
+            down_name = f"model.layers.{layer}.mlp.experts.down_proj"
+            expert_parameter_names.update((gate_up_name, down_name))
+            gate_up = state[gate_up_name]
+            down = state[down_name]
+            for expert in range(config.num_local_experts):
+                gate, up = gate_up[expert].chunk(2, dim=0)
+                prefix = f"model.layers.{layer}.mlp.experts.{expert}"
+                checkpoint[f"{prefix}.gate_proj.weight"] = gate.contiguous()
+                checkpoint[f"{prefix}.up_proj.weight"] = up.contiguous()
+                checkpoint[f"{prefix}.down_proj.weight"] = down[expert].contiguous()
+        for tensor_name, tensor in state.items():
+            if tensor_name not in expert_parameter_names:
+                checkpoint[tensor_name] = tensor.contiguous()
+
+        snapshot = self.snapshot / "tiny-mixtral"
+        snapshot.mkdir()
+        shard_name = "model.safetensors"
+        save_file(checkpoint, snapshot / shard_name)
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "metadata": {},
+                    "weight_map": {
+                        tensor_name: shard_name for tensor_name in checkpoint
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        paged_config = MixtralConfig.from_dict(config.to_dict())
+        with init_empty_weights(include_buffers=False):
+            paged_model = MixtralForCausalLM(paged_config)
+        with SafetensorExpertStore(snapshot) as store:
+            runtime = PagedExpertRuntime(
+                ExpertSlotCache(
+                    store,
+                    capacity_per_layer=config.num_local_experts,
+                    device="cpu",
+                    policy=CachePolicy.LRU,
+                    pin_staging=False,
+                )
+            )
+            adapter = attach_transformers_moe_runtime(
+                paged_model,
+                runtime,
+                implementation="moevm_paged_tiny_mixtral",
+            )
+            self.assertEqual(adapter.model_type, "mixtral")
+            self.assertEqual(
+                transformers_moe_adapter_for_model(paged_model),
+                adapter,
+            )
+            loaded = load_non_expert_weights_into_meta_model(
+                paged_model,
+                store,
+                device="cpu",
+            )
+            paged_model.eval()
+
+            self.assertEqual(set(loaded), set(state) - expert_parameter_names)
+            validation = validate_transformers_paged_model(
+                paged_model,
+                store,
+                runtime=runtime,
+            )
+            self.assertEqual(validation["adapter"], "mixtral")
+            self.assertEqual(validation["expert_meta_parameters"], 4)
+
+            input_ids = torch.tensor([[2, 7, 11, 5]], dtype=torch.long)
+            attention_mask = torch.ones_like(input_ids)
+            with torch.no_grad():
+                eager_logits = eager_model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits
+                paged_logits = paged_model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits
+            torch.testing.assert_close(paged_logits, eager_logits)
 
     def test_tiny_olmoe_meta_loader_forward_and_generate_match_eager(self) -> None:
         try:

@@ -40,6 +40,10 @@ been shown to track end-to-end measurements within a documented error band.
 ## M3 — Small-MoE runtime prototype
 
 - [x] focused PyTorch/Transformers expert-backend integration;
+- [x] explicit Transformers adapter boundary with exact tiny-model parity for
+  both OLMoE and Mixtral;
+- [ ] verified full-checkpoint execution and measured evidence for a second MoE
+  family; current full-model evidence remains OLMoE-only;
 - [x] per-layer expert slot map and bounded transactional staging path;
 - [x] bounded pinned-memory staging buffer;
 - [ ] pinned host expert cache;
