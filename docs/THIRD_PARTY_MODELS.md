@@ -48,13 +48,17 @@ MoEVM Lab does not redistribute the weights, tokenizer assets or other Qwen
 checkpoint files, and its license does not grant rights to those third-party
 materials.
 
-Current evidence is deliberately narrower than full-checkpoint support. A
-deterministic tiny `qwen2_moe` configuration, created locally from synthetic
-test weights, has exact eager-versus-paged logits parity and exercises the
-resident shared-expert path. The pinned public checkpoint has not yet passed
-the project's full acquisition, integrity, greedy-token parity, memory or
-performance gates. No full-checkpoint Qwen result is claimed until those gates
-are run and recorded.
+Current evidence for the pinned full checkpoint is narrow and specific: this path
+has a successful deterministic local reference capture (`systems_en`,
+`max_new_tokens=2`, `seed=17`, `temperature=0.0`) with full-manifest
+integrity verification, and a full-checkpoint sync runtime gate against that
+reference that passed exact greedy token parity (2/2 tokens). It is a correctness
+smoke only: one short prompt, no throughput claim, and no production-concurrency
+coverage.
+
+The deterministic tiny `qwen2_moe` configuration, created locally from synthetic
+test weights, also has exact eager-versus-paged logits parity and exercises the
+resident shared-expert path.
 
 ## Future research candidates
 

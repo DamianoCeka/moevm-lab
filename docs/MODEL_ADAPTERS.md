@@ -64,19 +64,23 @@ establish:
 - memory reduction or speed on Mixtral;
 - free-running generation, concurrency or production serving behavior.
 
-The Qwen2MoE test independently proves exact eager-versus-paged logits on a
+The Qwen2MoE tiny test independently proves exact eager-versus-paged logits on a
 deterministic tiny configuration whose shared expert remains resident and is
 loaded through the non-expert path. Those synthetic weights are created by the
-test and are not Qwen checkpoint weights. This evidence does **not** yet
-establish for the pinned `Qwen/Qwen1.5-MoE-A2.7B` checkpoint:
+test and are not Qwen checkpoint weights.
 
-- completed acquisition and integrity verification of every required file;
-- exact full-model greedy-token parity;
-- bounded VRAM use or a memory reduction on a 12 GB GPU;
-- speed relative to a controlled eager or offload baseline;
-- free-running generation, concurrency or production serving behavior.
+For the pinned `Qwen/Qwen1.5-MoE-A2.7B` checkpoint, this repository has now
+completed local deterministic full-checkpoint capture and sync-path parity gate:
 
-The next acceptance gate is that exact pinned Qwen revision with verified shard
-provenance, exact greedy-token parity and a controlled baseline. Granite 4
-H-Tiny and gpt-oss-20b remain later research candidates only; neither is an
-implemented or validated MoEVM adapter.
+- full-manifest integrity checks for required snapshot files;
+- exact greedy-token parity against pinned reference on one controlled prompt
+  (`2/2` tokens matched);
+- bounded sync run accounting and fit diagnostics for that smoke prompt.
+
+It is still a **correctness-smoke** only path: no throughput claim, no production
+serving, no concurrency study, and no general benchmark across seeds/lengths/hardware.
+
+Next research steps are to rerun Qwen under the same gated protocol for broader
+controls (or a multi-prompt sweep) before any speed claim. Granite 4 H-Tiny and
+gpt-oss-20b remain later research candidates only; neither is an implemented or
+validated MoEVM adapter.
