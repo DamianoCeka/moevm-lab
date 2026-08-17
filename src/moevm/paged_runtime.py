@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bounded, read-only expert paging primitives for real OLMoE checkpoints.
+"""Bounded, read-only expert paging primitives for supported MoE checkpoints.
 
 This module deliberately keeps the first hardware runtime small and bounded:
 only the experts selected by the router are read, staging memory is preallocated,
@@ -66,7 +66,7 @@ _SAFETENSORS_DTYPES = {
 
 @dataclass(frozen=True, slots=True)
 class ExpertSpec:
-    """Packed OLMoE expert layout used by Transformers."""
+    """Packed gated-MLP expert layout used by the supported Transformers models."""
 
     hidden_size: int
     intermediate_size: int
@@ -157,7 +157,7 @@ class SafetensorExpertStore:
             entries.setdefault(key, {})[projection] = tensor_name
 
         if not entries:
-            raise ValueError("index contains no OLMoE per-expert weights")
+            raise ValueError("index contains no supported per-expert weights")
         incomplete = {
             key: sorted(set(_PROJECTIONS) - projections.keys())
             for key, projections in entries.items()
@@ -2799,7 +2799,7 @@ class ExpertSlotCache:
 
 
 class PagedExpertRuntime:
-    """Execute routed OLMoE experts through a bounded slot cache."""
+    """Execute routed gated-MLP experts through a bounded slot cache."""
 
     def __init__(self, cache: ExpertSlotCache) -> None:
         self.cache = cache
@@ -3079,32 +3079,86 @@ def register_transformers_paged_experts(
     )
 
 
-def attach_transformers_olmoe_runtime(
+@dataclass(frozen=True, slots=True)
+class TransformersMoEAdapter:
+    """Describe one compatible Transformers sparse-MoE module layout.
+
+    OLMoE and Mixtral expose the same packed expert backend in the pinned
+    Transformers release, but their model identities remain explicit.  Keeping
+    that identity in a small adapter prevents model-specific checks from
+    leaking into the cache, storage and scheduling layers.
+    """
+
+    model_type: str
+    display_name: str
+
+    def layers(self, model: Any) -> Any:
+        try:
+            return model.model.layers
+        except AttributeError as exc:
+            raise TypeError(
+                f"expected a {self.display_name}ForCausalLM-compatible model"
+            ) from exc
+
+    def experts(self, layer_module: Any) -> Any:
+        try:
+            return layer_module.mlp.experts
+        except AttributeError as exc:
+            raise TypeError(
+                f"expected {self.display_name} decoder layers with mlp.experts"
+            ) from exc
+
+
+_TRANSFORMERS_MOE_ADAPTERS = {
+    "olmoe": TransformersMoEAdapter("olmoe", "OLMoE"),
+    "mixtral": TransformersMoEAdapter("mixtral", "Mixtral"),
+}
+
+
+def transformers_moe_adapter_for_model(model: Any) -> TransformersMoEAdapter:
+    """Resolve a fail-closed adapter for one supported Transformers model."""
+
+    config = getattr(model, "config", None)
+    model_type = getattr(config, "model_type", None)
+    if not isinstance(model_type, str):
+        raise TypeError("Transformers MoE model config has no model_type")
+    try:
+        return _TRANSFORMERS_MOE_ADAPTERS[model_type]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_TRANSFORMERS_MOE_ADAPTERS))
+        raise TypeError(
+            f"unsupported Transformers MoE model type {model_type!r}; "
+            f"supported: {supported}"
+        ) from exc
+
+
+def attach_transformers_moe_runtime(
     model: Any,
     runtime: PagedExpertRuntime,
     *,
     implementation: str = "moevm_paged",
-) -> None:
-    """Attach a runtime to OLMoE layer modules, including meta-initialized models."""
+) -> TransformersMoEAdapter:
+    """Attach the paged backend to one supported Transformers sparse MoE."""
+
+    adapter = transformers_moe_adapter_for_model(model)
     register_transformers_paged_experts(implementation)
-    try:
-        layers = model.model.layers
-        config = model.config
-    except AttributeError as exc:
-        raise TypeError("expected an OlmoeForCausalLM-compatible model") from exc
+    layers = adapter.layers(model)
+    config = model.config
     store = runtime.cache.store
     expected_layers = tuple(range(len(layers)))
     if store.layers != expected_layers:
         raise ValueError("model layer count does not match the expert store")
     if config.hidden_act != "silu":
-        raise ValueError(f"paged OLMoE requires SiLU, got {config.hidden_act}")
+        raise ValueError(
+            f"paged {adapter.display_name} requires SiLU, got {config.hidden_act}"
+        )
     if (
         config.hidden_size != store.spec.hidden_size
         or config.intermediate_size != store.spec.intermediate_size
     ):
         raise ValueError("model dimensions do not match the expert store")
     for layer_index, layer_module in enumerate(layers):
-        experts = layer_module.mlp.experts
+        experts = adapter.experts(layer_module)
         if experts.num_experts != len(store.experts_in_layer(layer_index)):
             raise ValueError(
                 f"model expert count does not match store layer {layer_index}"
@@ -3115,10 +3169,29 @@ def attach_transformers_olmoe_runtime(
             )
     config._experts_implementation = implementation
     for layer_index, layer_module in enumerate(layers):
-        experts = layer_module.mlp.experts
+        experts = adapter.experts(layer_module)
         experts._moevm_paged_runtime = runtime
         experts._moevm_layer_index = layer_index
         experts.config._experts_implementation = implementation
+    return adapter
+
+
+def attach_transformers_olmoe_runtime(
+    model: Any,
+    runtime: PagedExpertRuntime,
+    *,
+    implementation: str = "moevm_paged",
+) -> None:
+    """Backward-compatible OLMoE-specific attachment entry point."""
+
+    adapter = transformers_moe_adapter_for_model(model)
+    if adapter.model_type != "olmoe":
+        raise TypeError("expected an OLMoEForCausalLM-compatible model")
+    attach_transformers_moe_runtime(
+        model,
+        runtime,
+        implementation=implementation,
+    )
 
 
 def load_non_expert_weights_into_meta_model(
@@ -3163,7 +3236,8 @@ def validate_transformers_paged_model(
     device: str | torch.device | None = None,
     runtime: PagedExpertRuntime | None = None,
 ) -> dict[str, int | str]:
-    """Fail closed if a paged OLMoE model has unsafe meta or dtype state."""
+    """Fail closed if a supported paged model has unsafe meta or dtype state."""
+    adapter = transformers_moe_adapter_for_model(model)
     expert_parameter_pattern = re.compile(
         r"^model\.layers\.\d+\.mlp\.experts\."
         r"(gate_up_proj|down_proj)$"
@@ -3225,8 +3299,8 @@ def validate_transformers_paged_model(
         is not transformers_paged_experts_forward
     ):
         raise RuntimeError("model config does not resolve to the MoEVM paged backend")
-    for layer_index, layer in enumerate(model.model.layers):
-        experts = layer.mlp.experts
+    for layer_index, layer in enumerate(adapter.layers(model)):
+        experts = adapter.experts(layer)
         candidate = getattr(experts, "_moevm_paged_runtime", None)
         attached_layer = getattr(experts, "_moevm_layer_index", None)
         if not isinstance(candidate, PagedExpertRuntime):
@@ -3248,6 +3322,7 @@ def validate_transformers_paged_model(
             "input embedding and expert cache must use the same target device"
         )
     return {
+        "adapter": adapter.model_type,
         "expert_meta_parameters": expert_meta,
         "non_expert_parameters": non_expert_parameters,
         "buffers": sum(1 for _ in model.named_buffers()),

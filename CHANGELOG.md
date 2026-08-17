@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added an explicit Transformers MoE adapter boundary and an exact end-to-end
+  tiny-Mixtral parity test while retaining the existing OLMoE API. This proves
+  model integration at small scale; it is not full-checkpoint Mixtral support
+  or performance evidence.
 - Added a read-only `moevm doctor --machine` report that keeps observed GPU,
   host-RAM and selected-volume capacity separate from the configuration-derived
   expert memory ledger. It does not open CUDA, load a checkpoint, benchmark

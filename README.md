@@ -39,8 +39,10 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
   reproducible RTX 3080 Ti + Crucial P310 hardware profile.
 - Audited static and hybrid expert-placement replay with strict
   leave-one-workload-out evaluation.
-- A bounded, read-only OLMoE expert store, per-layer GPU slot cache, and
+- A bounded, read-only gated-MLP expert store, per-layer GPU slot cache, and
   synchronous paged forward path with exact tiny-model and real-expert checks.
+  The adapter boundary supports OLMoE and now has an exact tiny-Mixtral
+  end-to-end parity test; full-checkpoint performance evidence remains OLMoE-only.
 - An opt-in bounded async path with one I/O worker, pinned staging buffers, a
   dedicated CUDA H2D stream and per-slot readiness/use events. It pipelines
   mmap/page-cache service and H2D with expert compute inside a routed layer.
@@ -319,6 +321,7 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Model adapter boundary](docs/MODEL_ADAPTERS.md)
 - [Memory ledger: tiers, traffic and evidence](docs/MEMORY_LEDGER.md)
 - [Reference benchmarks](benchmarks/reference/README.md)
 - [Benchmarking rules](docs/BENCHMARKING.md)
