@@ -803,14 +803,13 @@ h3 {
 .section-label::after {
   width: min(14rem, 35vw);
   height: 1px;
-  background: var(--cyan-dark);
+  display: none;
   content: "";
 }
 
 .evidence,
 .workflow {
   padding-block: var(--section-space);
-  border-top: 1px solid var(--line);
 }
 
 .evidence-rail {
