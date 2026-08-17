@@ -75,6 +75,79 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
 smallest useful overlap configuration and the initial comparison point. The
 default remains `--pipeline sync`, for which one staging slot remains valid.
 
+### Opt-in CUDA overlap telemetry
+
+`--cuda-overlap-telemetry` adds CUDA-event instrumentation to a benchmark run.
+It is off by default and records only two paged-expert lanes on the selected
+CUDA device: H2D copies into expert slots and the corresponding paged-expert
+compute. For example:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\benchmark_paged_olmoe.py `
+  --snapshot <pinned-local-snapshot> `
+  --output .\results\paged-async-timeline.json `
+  --pipeline async `
+  --staging-slots 2 `
+  --cuda-overlap-telemetry
+```
+
+The result records the individual model-call timelines under each pass's token
+records and a per-pass `cuda_overlap` summary. The summary reports the active
+H2D and expert-compute durations, their interval-union overlap, overlap
+fractions, and the H2D duration hidden versus exposed by expert compute. It
+does not union timestamps from different model calls: each model call has its
+own shared CUDA-event origin, then the per-call summaries are added.
+
+To inspect one same-origin model call visually, render a static SVG from the
+raw spans. This command does not rewrite the benchmark JSON and refuses to
+overwrite an existing SVG:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\render_cuda_overlap_timeline.py `
+  --input .\results\paged-async-timeline.json `
+  --pass cold_expert_cache `
+  --call prefill `
+  --output .\results\paged-async-prefill-timeline.svg
+```
+
+The SVG uses separate H2D and expert-compute lanes and highlights only their
+shared CUDA-event intervals. Select `--call decode:1` (or another recorded
+per-token index) for a decode invocation; never combine spans from separate
+calls into one visual timeline.
+
+When a completed capture reports `status: "measured"` and a non-zero
+`overlap_ms`, it is same-device CUDA-event evidence that the *instrumented*
+paged-expert H2D and paged-expert-compute intervals overlapped in the captured
+model call(s). It does **not** prove physical NVMe activity, an SSD/page-cache
+state, storage-I/O overlap, copy-engine utilization, overlap of all model
+kernels, or a general speedup. A zero result is likewise not proof that no
+useful overlap is possible: the pass may have no recorded H2D or compute span,
+or the chosen workload/cache state may expose no overlap.
+
+Treat this as instrumentation, not a new timing mode. CUDA events add work, so
+wall-time comparisons must use paired runs collected with the same telemetry
+setting. Do not compare a telemetry-enabled async result with a
+telemetry-disabled sync result.
+
+For a performance or overlap comparison, collect at least three independent
+sync/async pairs with `--cuda-overlap-telemetry` on **both** sides. Keep the
+exact committed source, GPU, checkpoint/snapshot, prompt or teacher-forced
+reference IDs, token limit, seed, cache policy, GPU slot capacity and staging
+configuration fixed within every pair. Preserve the raw JSON results and run
+the pair gate; it rejects reports whose telemetry settings differ:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\compare_paged_pipeline_pair.py `
+  .\results\sync-timeline.json `
+  .\results\async-timeline.json `
+  --output .\results\sync-async-timeline-pair.json
+```
+
+The pair gate establishes compatible inputs and numerical/cache invariants; it
+does not by itself turn a single pair or a non-zero timeline overlap into a
+general performance claim. Report repeated wall-time results separately from
+the timeline metrics, and do not add their durations as if they were serial.
+
 The experimental conservative selector uses the same bounded machinery:
 
 ```powershell
@@ -124,11 +197,15 @@ Then run the same bound workload:
   --staging-slots 2
 ```
 
-The builder first requires exact token identity and identical cache, eviction,
-storage and H2D primitives within every pair. It selects async for a pass only
-when async wins every pair and the median paired `sync / async` ratio clears
-the default 3% threshold. Mixed or smaller evidence selects sync. Cold and
-immediate retained passes are decided independently.
+The builder first requires exact sync/async prediction and feed identity plus
+identical cache, eviction, storage and H2D primitives within every pair. An
+autoregressive calibration must match its reference exactly. A teacher-forced
+calibration must feed the exact pinned reference IDs; its recorded greedy
+predictions may differ from the baseline only when sync and async remain
+identical to each other. It selects async for a pass only when async wins every
+pair and the median paired `sync / async` ratio clears the default 3% threshold.
+Mixed or smaller evidence selects sync. Cold and immediate retained passes are
+decided independently.
 
 The profile binds the selection to the exact GPU UUID and VRAM size, pinned
 checkpoint hashes, workload/token budget, cache policy and capacity, Python
@@ -190,6 +267,15 @@ completion only; it does not include slot waits or time that the CUDA compute
 stream spends behind a readiness event. `pending_loads_peak` covers all pending
 keys, including queued and serviced work, while `peak_staging_in_use` is the
 separate bounded staging-occupancy metric.
+
+The host diagnostics split pipeline pressure without changing cache invariants:
+`reader_queue_wait_seconds` is accepted enqueue-to-worker-dequeue dwell time,
+`staging_wait_seconds` is time from first observing no free staging buffer to a
+successful claim, and `proactive_h2d_slot_declines` counts ready, undemanded
+lookaheads that could not start H2D because no safe empty GPU slot existed.
+`storage_queue_seconds` remains the legacy aggregate. These are Python-host
+backpressure signals, not proof of physical NVMe saturation, and are diagnostic
+only rather than sync/async pair invariants.
 
 ## What this MVP does not prove
 
@@ -254,8 +340,11 @@ source commit and the benchmark-script SHA-256 in every JSON result. Commit the
 reviewed implementation before collecting evidence; ignored result files do not
 make the tree dirty.
 
-The current tests verify bounded scheduling capability, event/lease ownership
-and sync-versus-async numerical parity. They do not measure intersecting H2D and
-compute intervals on a common device timeline, so passing tests alone is not
-evidence of temporal overlap. That claim needs CUDA-event interval measurement
-or a profiler trace showing the copy and expert kernels executing concurrently.
+The regular test suite verifies bounded scheduling capability, event/lease
+ownership, sync-versus-async numerical parity, and deterministic
+timeline-summary logic. CUDA-gated tests also verify event ordering on a
+compatible local GPU, but they are not a benchmark capture; no accepted
+real-GPU paired timeline capture is published with this implementation yet.
+Passing tests alone is therefore not evidence of temporal overlap. Use
+`--cuda-overlap-telemetry` for scoped same-device CUDA-event interval evidence
+and retain a profiler trace when hardware-level attribution is needed.

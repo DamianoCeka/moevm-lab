@@ -117,7 +117,6 @@ def result_binding(result: Mapping[str, Any]) -> dict[str, Any]:
             "python": environment.get("python"),
             "platform": environment.get("platform"),
             "packages": environment.get("packages"),
-            "source_commit": source.get("commit"),
             "provenance_mode": source.get("provenance_mode"),
             "benchmark_script_sha256": source.get("benchmark_script_sha256"),
             "paged_runtime_sha256": source.get("paged_runtime_sha256"),
@@ -138,8 +137,8 @@ def _validate_result(result: Mapping[str, Any], expected_pipeline: str) -> None:
     if source.get("tree_clean") is not True:
         raise ValueError("calibration result must come from a clean tree")
     reference = _mapping(result.get("reference_comparison"), "reference_comparison")
-    if reference.get("available") is not True or reference.get("matched") is not True:
-        raise ValueError("calibration result must pass its reference gate")
+    if reference.get("available") is not True:
+        raise ValueError("calibration result must include a reference gate")
     passes = _mapping(result.get("passes"), "result.passes")
     for pass_name in PASS_NAMES:
         measured_pass = _mapping(passes.get(pass_name), f"passes.{pass_name}")
@@ -147,6 +146,24 @@ def _validate_result(result: Mapping[str, Any], expected_pipeline: str) -> None:
             measured_pass.get("total_wall_seconds"),
             f"passes.{pass_name}.total_wall_seconds",
         )
+    reference_mode = reference.get("mode")
+    if reference_mode == "autoregressive_exact_gate":
+        if reference.get("matched") is not True:
+            raise ValueError("autoregressive calibration must match its reference")
+    elif reference_mode == "teacher_forced":
+        reference_ids = reference.get("generated_token_ids")
+        if not isinstance(reference_ids, list) or not reference_ids:
+            raise ValueError("teacher-forced reference token IDs are required")
+        for pass_name in PASS_NAMES:
+            measured_pass = _mapping(passes.get(pass_name), f"passes.{pass_name}")
+            if measured_pass.get("teacher_forced") is not True:
+                raise ValueError("teacher-forced calibration pass is not marked")
+            if measured_pass.get("fed_token_ids") != reference_ids:
+                raise ValueError(
+                    "teacher-forced calibration must feed the exact reference IDs"
+                )
+    else:
+        raise ValueError("unsupported calibration reference mode")
 
 
 def _select_pipeline(ratios: Sequence[float], minimum_gain: float) -> tuple[str, str]:

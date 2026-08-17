@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from .analysis import (
     write_trace_analysis,
 )
 from .config import ExperimentConfig, load_config
+from .machine_doctor import MachineReport, collect_machine_report
 from .placement_analysis import (
     PLACEMENT_POLICIES,
     PlacementTrace,
@@ -92,9 +94,29 @@ def _build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--output", default="results/synthetic.trace.jsonl")
 
     doctor = subparsers.add_parser(
-        "doctor", help="validate a config and show cache capacity"
+        "doctor", help="validate a config and inspect its memory budget"
     )
     doctor.add_argument("--config", default=_bundled_config("toy.toml"))
+    doctor.add_argument(
+        "--machine",
+        action="store_true",
+        help="add read-only GPU, RAM, and disk observations",
+    )
+    doctor.add_argument(
+        "--cache-path",
+        default=".",
+        help="path whose existing volume should be inspected with --machine",
+    )
+    doctor.add_argument(
+        "--no-gpu-probe",
+        action="store_true",
+        help="skip the optional nvidia-smi call with --machine",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the read-only --machine report as JSON",
+    )
 
     analyze = subparsers.add_parser(
         "analyze-trace",
@@ -233,6 +255,88 @@ def _doctor(config: ExperimentConfig) -> str:
     )
 
 
+def _format_bytes(value: int | None) -> str:
+    if value is None:
+        return "unavailable"
+    if value < 1024**2:
+        return f"{value:,} bytes"
+    if value < 1024**3:
+        return f"{value / (1024**2):.2f} MiB"
+    return f"{value / (1024**3):.2f} GiB"
+
+
+def _machine_doctor_console(report: MachineReport) -> str:
+    """Render a human-readable snapshot without implying runtime readiness."""
+    ledger = report.ledger
+    memory = report.system_memory
+    disk = report.disk
+    lines = [
+        "Machine observations (read-only; no CUDA context, model load, or download).",
+        (
+            f"Host RAM [{memory.status}, {memory.source}]: "
+            f"{_format_bytes(memory.available_bytes)} available / "
+            f"{_format_bytes(memory.total_bytes)} total"
+        ),
+        (
+            f"Disk [{disk.status}] for {disk.requested_path}: "
+            f"{_format_bytes(disk.free_bytes)} free / "
+            f"{_format_bytes(disk.total_bytes)} total"
+        ),
+    ]
+    if memory.detail:
+        lines.append(f"Host RAM detail: {memory.detail}")
+    if disk.detail:
+        lines.append(f"Disk detail: {disk.detail}")
+    if disk.inspected_path and disk.inspected_path != disk.requested_path:
+        lines.append(f"Disk inspected ancestor: {disk.inspected_path}")
+
+    if report.gpu is None:
+        lines.append("GPU probe: skipped")
+    elif report.gpu.status != "available":
+        detail = f" ({report.gpu.detail})" if report.gpu.detail else ""
+        lines.append(f"GPU probe [{report.gpu.status}]{detail}")
+    else:
+        lines.append("GPU probe [available]:")
+        for gpu in report.gpu.gpus:
+            lines.append(
+                f"  GPU {gpu.index}: {gpu.name}; "
+                f"{_format_bytes(gpu.free_vram_bytes)} free / "
+                f"{_format_bytes(gpu.total_vram_bytes)} total; "
+                f"driver {gpu.driver_version}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "Configuration memory ledger (logical config values, not checkpoint or physical-I/O measurements):",
+            f"Model shape: {ledger.layers} layers × {ledger.experts_per_layer} experts; top-{ledger.top_k}",
+            f"Average expert payload: {_format_bytes(ledger.expert_bytes)}",
+            f"All expert payloads (logical): {_format_bytes(ledger.all_expert_logical_bytes)}",
+            (
+                f"VRAM expert budget: {_format_bytes(ledger.vram_cache_bytes)} "
+                f"({ledger.vram_cache_slots:,} whole-expert slots; "
+                f"{_format_bytes(ledger.vram_cache_remainder_bytes)} unused)"
+            ),
+            (
+                f"RAM expert budget: {_format_bytes(ledger.ram_cache_bytes)} "
+                f"({ledger.ram_cache_slots:,} whole-expert slots; "
+                f"{_format_bytes(ledger.ram_cache_remainder_bytes)} unused)"
+            ),
+            (
+                f"One token before cache hits: {ledger.routed_expert_accesses_per_token:,} "
+                f"routed expert accesses; "
+                f"{_format_bytes(ledger.per_token_logical_routed_expert_bytes)} "
+                "logical payload"
+            ),
+            (
+                "This is capacity and logical-flow planning, not a claim that the "
+                "model fits, that the disk was read, or that a benchmark will be fast."
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_windows_stdio()
     parser = _build_parser()
@@ -283,6 +387,26 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "doctor":
+            if args.json and not args.machine:
+                raise ValueError("--json requires doctor --machine")
+            if args.machine:
+                report = collect_machine_report(
+                    config,
+                    disk_path=args.cache_path,
+                    probe_gpu=not args.no_gpu_probe,
+                )
+                if args.json:
+                    print(
+                        json.dumps(
+                            dataclasses.asdict(report),
+                            allow_nan=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(_machine_doctor_console(report))
+                return 0
             print(_doctor(config))
             return 0
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added a read-only `moevm doctor --machine` report that keeps observed GPU,
+  host-RAM and selected-volume capacity separate from the configuration-derived
+  expert memory ledger. It does not open CUDA, load a checkpoint, benchmark
+  storage or claim model fit/performance.
+- Added an original memory-ledger guide and corrected the public memory-flow
+  diagram to distinguish the simulator's logical RAM LRU from the runtime's
+  bounded pinned staging and unobserved OS page-cache path.
+- Added opt-in same-device CUDA-event telemetry for paged-expert H2D and
+  expert-compute intervals, a fail-closed telemetry-aware pair gate, and a
+  create-only accessible SVG timeline renderer. This instruments one model call
+  at a time; it does not claim physical NVMe overlap or a general speedup.
 - Added a public, non-confidential commercial inquiry path and a fixed-scope
   design-partner offer for model/hardware fit audits, while keeping the
   community core Apache-2.0 and explicitly avoiding guaranteed performance or
@@ -44,6 +55,10 @@
   independently, switches only at a drained pass boundary, and rejects profiles
   that do not match the GPU, model, workload, budget, environment or source
   hashes.
+- Kept the profile reference gate strict but mode-aware: autoregressive runs
+  require exact baseline identity, while teacher-forced runs require the exact
+  pinned feed and exact sync/async prediction parity without misclassifying a
+  shared numerical prediction difference as a scheduling failure.
 - Added a deterministic study summarizer that recomputes pair gates, validates
   the exact experiment matrix and strips private execution paths, plus support
   for fully resident routing-capture models that do not expose an Accelerate

@@ -4,11 +4,13 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 try:
@@ -40,6 +42,64 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.root = Path(self.temporary_directory.name)
+
+    @staticmethod
+    def _cuda_timeline(
+        *,
+        h2d: tuple[tuple[float, float], ...],
+        compute: tuple[tuple[float, float], ...],
+        status: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        spans: list[dict[str, Any]] = []
+        transfers = []
+        kernels = []
+        sequence = 0
+        for lane, ranges, intervals in (
+            ("h2d", h2d, transfers),
+            ("expert_compute", compute, kernels),
+        ):
+            for expert, (start_ms, end_ms) in enumerate(ranges):
+                name = f"{lane}:{sequence}:L0:E{expert}"
+                spans.append(
+                    {
+                        "lane": lane,
+                        "name": name,
+                        "sequence": sequence,
+                        "layer": 0,
+                        "expert": expert,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "duration_ms": end_ms - start_ms,
+                    }
+                )
+                intervals.append(_HARNESS.CudaInterval(name, start_ms, end_ms))
+                sequence += 1
+        summary = _HARNESS.summarize_cuda_timeline(
+            transfers=transfers,
+            compute=kernels,
+        )
+        summary.pop("intervals")
+        resolved_status = status or (
+            "measured" if h2d and compute else "not_applicable"
+        )
+        if resolved_status == "not_applicable" and reason is None:
+            reason = "one CUDA event lane was not observed in this model call"
+        return {
+            "schema_version": 2,
+            "complete": True,
+            "status": resolved_status,
+            "method": "cuda_events_v1",
+            "scope": "paged_expert_h2d_vs_expert_compute",
+            "unit": "milliseconds",
+            "reason": reason,
+            "spans": spans,
+            "summary": summary,
+            "coverage": {
+                "cache_transfer_loads_delta": len(h2d),
+                "h2d_span_count": len(h2d),
+            },
+        }
 
     def _args(self, *extra: str) -> argparse.Namespace:
         return _HARNESS.build_parser().parse_args(
@@ -84,6 +144,11 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertIsNone(args.prompt)
         self.assertFalse(args.teacher_force_reference)
         self.assertFalse(args.demo_mode)
+        self.assertFalse(args.cuda_overlap_telemetry)
+
+        telemetry_args = self._args("--cuda-overlap-telemetry")
+        _HARNESS._validate_args(telemetry_args)
+        self.assertTrue(telemetry_args.cuda_overlap_telemetry)
 
         demo_args = self._args("--demo-mode")
         _HARNESS._validate_args(demo_args)
@@ -290,6 +355,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=72,
             storage_loads=6,
             transfer_loads=6,
+            proactive_h2d_slot_declines=2,
             adaptive_async_forwards=1,
             adaptive_sync_forwards=2,
             adaptive_async_experts=4,
@@ -299,6 +365,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             storage_seconds=1.0,
             transfer_seconds=2.0,
             forward_seconds=4.0,
+            reader_queue_wait_seconds=0.25,
+            staging_wait_seconds=0.5,
         )
         after = SimpleNamespace(
             requests=14,
@@ -309,6 +377,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             host_to_device_bytes=84,
             storage_loads=7,
             transfer_loads=7,
+            proactive_h2d_slot_declines=5,
             adaptive_async_forwards=2,
             adaptive_sync_forwards=4,
             adaptive_async_experts=7,
@@ -318,6 +387,8 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             storage_seconds=1.5,
             transfer_seconds=2.25,
             forward_seconds=5.0,
+            reader_queue_wait_seconds=0.75,
+            staging_wait_seconds=1.25,
         )
 
         delta = _HARNESS._metrics_delta(after, before)
@@ -327,6 +398,9 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(delta["hits"], 3)
         self.assertEqual(delta["misses"], 1)
         self.assertEqual(delta["hit_rate"], 0.75)
+        self.assertEqual(delta["proactive_h2d_slot_declines"], 3)
+        self.assertEqual(delta["reader_queue_wait_seconds"], 0.5)
+        self.assertEqual(delta["staging_wait_seconds"], 0.75)
         self.assertEqual(delta["adaptive_async_forwards"], 1)
         self.assertEqual(delta["adaptive_sync_forwards"], 2)
         self.assertEqual(delta["adaptive_async_experts"], 3)
@@ -364,6 +438,139 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["status"], "ok")
         with self.assertRaises(FileExistsError):
             _HARNESS._write_json_create_only(output, {"status": "replacement"})
+
+    def test_cuda_overlap_aggregation_keeps_model_call_origins_separate(self) -> None:
+        result = _HARNESS._aggregate_cuda_overlap(
+            [
+                self._cuda_timeline(
+                    h2d=((0.0, 2.0), (2.0, 4.0)),
+                    compute=((1.0, 3.0), (4.0, 8.0)),
+                ),
+                self._cuda_timeline(
+                    h2d=(),
+                    compute=((0.0, 3.0),),
+                    reason="no expert H2D intervals were observed in this model call",
+                ),
+            ]
+        )
+
+        self.assertEqual(result["status"], "measured")
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["model_call_count"], 2)
+        self.assertEqual(result["measured_model_call_count"], 1)
+        self.assertEqual(result["h2d_interval_count"], 2)
+        self.assertEqual(result["expert_compute_interval_count"], 3)
+        self.assertEqual(result["h2d_union_ms"], 4.0)
+        self.assertEqual(result["expert_compute_union_ms"], 9.0)
+        self.assertEqual(result["overlap_ms"], 2.0)
+        self.assertEqual(result["h2d_overlap_fraction"], 0.5)
+        self.assertEqual(result["h2d_exposed_ms"], 2.0)
+
+        unavailable = _HARNESS._aggregate_cuda_overlap(
+            [
+                self._cuda_timeline(
+                    h2d=(),
+                    compute=((0.0, 2.0), (2.0, 4.0)),
+                    reason="no expert H2D intervals were observed in this model call",
+                )
+            ]
+        )
+        self.assertEqual(unavailable["status"], "not_applicable")
+        self.assertIn("no expert H2D", unavailable["reason"])
+
+        long_capture_durations = [1000.0, *([0.1] * 64)]
+        long_result = _HARNESS._aggregate_cuda_overlap(
+            [
+                self._cuda_timeline(
+                    h2d=((0.0, duration),),
+                    compute=((0.0, duration),),
+                )
+                for duration in long_capture_durations
+            ]
+        )
+        self.assertEqual(
+            long_result["h2d_union_ms"],
+            math.fsum(long_capture_durations),
+        )
+
+    def test_cuda_overlap_aggregation_rejects_incomplete_or_tampered_call(self) -> None:
+        mutators = {
+            "incomplete": lambda call: call.__setitem__("complete", False),
+            "unknown status": lambda call: call.__setitem__("status", "partial"),
+            "duplicate sequence": lambda call: call["spans"][1].__setitem__(
+                "sequence", call["spans"][0]["sequence"]
+            ),
+            "summary boolean count": lambda call: call["summary"][
+                "transfer"
+            ].__setitem__("interval_count", True),
+            "missing coverage": lambda call: call.pop("coverage"),
+            "coverage H2D span mismatch": lambda call: call["coverage"].__setitem__(
+                "h2d_span_count", 2
+            ),
+            "coverage cache-transfer mismatch": lambda call: call[
+                "coverage"
+            ].__setitem__("cache_transfer_loads_delta", 2),
+            "coverage boolean count": lambda call: call["coverage"].__setitem__(
+                "cache_transfer_loads_delta", True
+            ),
+        }
+        for name, mutate in mutators.items():
+            with self.subTest(name=name):
+                call = self._cuda_timeline(
+                    h2d=((0.0, 2.0),),
+                    compute=((1.0, 3.0),),
+                )
+                mutate(call)
+                with self.assertRaises(RuntimeError):
+                    _HARNESS._aggregate_cuda_overlap([call])
+
+    def test_cuda_overlap_aggregation_surfaces_incomplete_capture_reason(self) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call.update(
+            {
+                "complete": False,
+                "status": "incomplete",
+                "reason": "an async H2D was cancelled before it could be measured",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "status='incomplete'.*cancelled before it could be measured",
+        ):
+            _HARNESS._aggregate_cuda_overlap([call])
+
+    def test_cuda_overlap_aggregation_rejects_legacy_unverified_schema(self) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call["schema_version"] = 1
+
+        with self.assertRaisesRegex(RuntimeError, "legacy-unverified"):
+            _HARNESS._aggregate_cuda_overlap([call])
+
+    def test_cuda_overlap_aggregation_accepts_worker_compatible_span_metadata(
+        self,
+    ) -> None:
+        call = self._cuda_timeline(
+            h2d=((0.0, 2.0),),
+            compute=((1.0, 3.0),),
+        )
+        call["capture_mode"] = "worker_aware"
+        for span, sequence in zip(call["spans"], (4, 9), strict=True):
+            span["sequence"] = sequence
+            span["name"] = (
+                f"{span['lane']}:{sequence}:L{span['layer']}:E{span['expert']}"
+            )
+
+        aggregate = _HARNESS._aggregate_cuda_overlap([call])
+
+        self.assertEqual(aggregate["status"], "measured")
+        self.assertEqual(aggregate["overlap_ms"], 1.0)
 
     def test_oom_classifier_is_narrow(self) -> None:
         self.assertTrue(_HARNESS._is_cuda_oom(RuntimeError("CUDA out of memory")))
@@ -411,6 +618,100 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
             source["benchmark_script"],
             _SCRIPT.relative_to(_SCRIPT.parents[1]).as_posix(),
         )
+
+    @unittest.skipUnless(torch is not None, "requires torch for timeline payload")
+    def test_inference_pass_attaches_opt_in_cuda_overlap_payload(self) -> None:
+        zero_metrics = SimpleNamespace(
+            requests=0,
+            hits=0,
+            misses=0,
+            evictions=0,
+            storage_bytes=0,
+            host_to_device_bytes=0,
+            storage_seconds=0.0,
+            transfer_seconds=0.0,
+            forward_seconds=0.0,
+        )
+        call_timeline = self._cuda_timeline(
+            h2d=((0.0, 4.0),),
+            compute=((2.0, 7.0),),
+        )
+
+        class Capture:
+            result = call_timeline
+
+            def __enter__(self):
+                return self
+
+            def __exit__(
+                self, _exc_type: object, _exc_value: object, _traceback: object
+            ) -> bool:
+                return False
+
+        class FakeRuntime:
+            def metrics(self):
+                return zero_metrics
+
+            @staticmethod
+            def cuda_timeline_capture():
+                return Capture()
+
+        class FakeTokenizer:
+            eos_token_id = None
+
+            @staticmethod
+            def decode(token_ids, **_kwargs):
+                return ",".join(str(token) for token in token_ids)
+
+        class FakeModel:
+            @staticmethod
+            def __call__(**_kwargs):
+                logits = torch.zeros(1, 1, 8)
+                logits[..., 3] = 1.0
+                return SimpleNamespace(logits=logits, past_key_values={})
+
+        originals = {
+            name: getattr(_HARNESS, name)
+            for name in (
+                "_sync_cuda",
+                "_reset_cuda_peak",
+                "_cuda_memory_payload",
+                "_process_memory",
+            )
+        }
+        _HARNESS._sync_cuda = lambda _torch: None
+        _HARNESS._reset_cuda_peak = lambda _torch: 0
+        _HARNESS._cuda_memory_payload = lambda _torch, _baseline: {}
+        _HARNESS._process_memory = lambda: {
+            "rss_bytes": 0,
+            "peak_rss_bytes": 0,
+        }
+        self.addCleanup(
+            lambda: [
+                setattr(_HARNESS, name, value) for name, value in originals.items()
+            ]
+        )
+
+        result = _HARNESS._run_inference_pass(
+            label="cold_expert_cache",
+            torch=torch,
+            model=FakeModel(),
+            tokenizer=FakeTokenizer(),
+            runtime=FakeRuntime(),
+            input_ids=torch.tensor([[1, 2]]),
+            attention_mask=torch.ones(1, 2, dtype=torch.long),
+            max_new_tokens=1,
+            expert_bytes=12,
+            capture_cuda_overlap=True,
+        )
+
+        self.assertEqual(result["cuda_overlap"]["status"], "measured")
+        self.assertEqual(result["cuda_overlap"]["schema_version"], 2)
+        self.assertEqual(result["prefill"]["cuda_event_timeline"]["schema_version"], 2)
+        self.assertEqual(result["cuda_overlap"]["h2d_union_ms"], 4.0)
+        self.assertEqual(result["cuda_overlap"]["overlap_ms"], 2.0)
+        self.assertEqual(result["prefill"]["cuda_event_timeline"], call_timeline)
+        self.assertEqual(result["first_token"]["cuda_event_timeline"], call_timeline)
 
     @unittest.skipUnless(torch is not None, "requires torch for manual decode contract")
     def test_manual_two_token_decode_uses_fresh_kv_and_extended_mask(self) -> None:

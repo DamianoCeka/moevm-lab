@@ -300,6 +300,10 @@ h3 {
     0 1rem 2.5rem rgba(0, 0, 0, 0.12);
 }
 
+.tier-staging {
+  border-color: rgba(255, 111, 103, 0.62);
+}
+
 .tier-identity,
 .tier-content {
   position: relative;
@@ -348,6 +352,10 @@ h3 {
   color: var(--cyan);
 }
 
+.tier-staging .tier-name strong {
+  color: var(--coral);
+}
+
 .tier-name span,
 .tier-content-label {
   color: var(--muted);
@@ -359,6 +367,35 @@ h3 {
   margin-bottom: 0.78rem;
   font-size: 1.05rem;
   line-height: 1.25;
+}
+
+.tier-vram-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11.5rem, 0.74fr);
+  gap: clamp(1rem, 2vw, 1.65rem);
+  align-items: stretch;
+}
+
+.compute-lane {
+  display: grid;
+  align-content: center;
+  gap: 0.42rem;
+  padding-left: clamp(1rem, 1.8vw, 1.5rem);
+  border-left: 1px solid rgba(66, 217, 238, 0.4);
+}
+
+.compute-label {
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 760;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.compute-copy {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .expert-row {
@@ -400,12 +437,42 @@ h3 {
   margin-left: auto;
 }
 
+.staging-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.staging-chip {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  padding: 0.42rem 0.72rem;
+  border: 1px solid var(--coral);
+  border-radius: 0.34rem;
+  background: rgba(255, 111, 103, 0.08);
+  color: var(--coral);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 680;
+}
+
+.staging-chip-muted {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-weight: 560;
+}
+
 .expert-path-source {
   animation: expert-source-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
-.expert-path-cache {
-  animation: expert-cache-pulse 4.6s ease-in-out 0.2s infinite both;
+.expert-path-staging {
+  animation: expert-staging-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .expert-path-active {
@@ -419,90 +486,78 @@ h3 {
 }
 
 .route {
-  position: absolute;
+  position: relative;
   z-index: 4;
-  color: var(--cyan);
   pointer-events: none;
+  align-self: center;
+  width: 100%;
+  height: 3.25rem;
+  margin-inline: auto;
 }
 
-.route-promote {
-  top: 8.6rem;
-  left: 41.44%;
-  width: 18.34%;
-  height: 9.86rem;
+.route-h2d {
+  --route-x: 50%;
+  color: var(--cyan);
 }
 
-.route-prefetch {
-  top: 22rem;
-  left: 59.78%;
-  width: 15.97%;
-  height: 10.07rem;
+.route-storage {
+  height: 5rem;
+}
+
+.route-flow {
+  position: absolute;
+  inset: 0;
+}
+
+.route-flow-demand {
+  --route-x: 34%;
+  color: var(--cyan);
+}
+
+.route-flow-lookahead {
+  --route-x: 68%;
   color: var(--coral);
 }
 
-.route-segment,
+.route-track,
 .route-arrow,
 .route-packet {
   position: absolute;
 }
 
-.route-target {
-  width: 0;
-  border-left: 3px solid currentColor;
+.route-track {
+  top: 0;
+  left: calc(var(--route-x) - 1.5px);
+  width: 2.2px;
+  height: 100%;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.68;
 }
 
-.route-target {
-  top: 0.58rem;
-  left: -1.5px;
-  height: calc(50% - 1.26rem);
-}
-
-.route-bridge {
-  top: calc(50% - 0.68rem);
-  right: 0.68rem;
-  left: -1.5px;
-  height: 0.68rem;
-  border-bottom: 3px solid currentColor;
-  border-left: 3px solid currentColor;
-  border-bottom-left-radius: 0.68rem;
-}
-
-.route-source {
-  top: 50%;
-  right: -1.5px;
-  width: 0.68rem;
-  height: 50%;
-  border-top: 3px solid currentColor;
-  border-right: 3px solid currentColor;
-  border-top-right-radius: 0.68rem;
-}
-
-.route-promote .route-target {
-  border-left-style: dashed;
-}
-
-.route-promote .route-bridge {
-  border-bottom-style: dashed;
-  border-left-style: dashed;
-}
-
-.route-promote .route-source {
-  border-top-style: dashed;
-  border-right-style: dashed;
+.route-flow-lookahead .route-track {
+  background: repeating-linear-gradient(
+    to bottom,
+    currentColor 0 0.38rem,
+    transparent 0.38rem 0.7rem
+  );
 }
 
 .route-arrow {
-  top: -0.38rem;
-  left: -0.75rem;
-  width: 1.5rem;
-  height: 1.5rem;
-  background: currentColor;
-  mask: url("assets/icons/arrow-up-bold.svg") center / contain no-repeat;
+  top: -0.45rem;
+  left: calc(var(--route-x) - 0.48rem);
+  width: 0;
+  height: 0;
+  border-left: 0.52rem solid transparent;
+  border-right: 0.52rem solid transparent;
+  border-bottom: 0.84rem solid currentColor;
+  border-top: 0;
+  filter: drop-shadow(0 0 0.42rem currentColor);
 }
 
 .route-packet {
-  bottom: -0.22rem;
-  left: calc(100% - 0.22rem);
+  top: calc(100% - 0.24rem);
+  left: calc(var(--route-x) - 0.24rem);
   width: 0.48rem;
   height: 0.48rem;
   border: 1px solid rgba(255, 255, 255, 0.72);
@@ -512,26 +567,95 @@ h3 {
   opacity: 0;
 }
 
-.route-promote .route-segment {
-  animation: upper-link-pulse 4.6s ease-in-out 0.2s infinite both;
+.route-label {
+  top: -0.24rem;
+  right: 0;
+  left: 0;
+  margin-inline: auto;
+  width: max-content;
+  position: absolute;
+  padding: 0.17rem 0.56rem 0.15rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.route-promote .route-packet {
-  animation: upper-packet 4.6s ease-in-out 0.2s infinite both;
+.route-label {
+  opacity: 0.85;
 }
 
-.route-prefetch .route-segment {
-  animation: lower-link-pulse 4.6s ease-in-out 0.2s infinite both;
+.route-storage .route-label {
+  top: 0.42rem;
+  right: auto;
+  left: calc(var(--route-x) + 1rem);
+  margin: 0;
 }
 
-.route-prefetch .route-packet {
-  animation: lower-packet 4.6s ease-in-out 0.2s infinite both;
+.route-flow-demand .route-label {
+  left: calc(var(--route-x) - 5rem);
+}
+
+.route-system-layer {
+  position: absolute;
+  z-index: 2;
+  top: 1.05rem;
+  left: 50%;
+  display: grid;
+  width: max-content;
+  max-width: min(18rem, 42%);
+  gap: 0.1rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 0.4rem;
+  background: rgba(7, 16, 22, 0.94);
+  color: var(--muted);
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.route-system-title {
+  color: var(--text);
+  font-size: 0.74rem;
+  font-weight: 680;
+}
+
+.route-system-note {
+  color: var(--faint);
+  font-size: 0.67rem;
+}
+
+.route-h2d .route-track {
+  animation: h2d-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-h2d .route-packet {
+  animation: h2d-packet 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-demand .route-track {
+  animation: demand-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-demand .route-packet {
+  animation: demand-packet 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-lookahead .route-track {
+  animation: lookahead-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-lookahead .route-packet {
+  animation: lookahead-packet 4.6s ease-in-out 0.2s infinite both;
 }
 
 .motion-toggle:not(:checked) ~ .tier .expert-path-source,
-.motion-toggle:not(:checked) ~ .tier .expert-path-cache,
+.motion-toggle:not(:checked) ~ .tier .expert-path-staging,
 .motion-toggle:not(:checked) ~ .tier .expert-path-active,
-.motion-toggle:not(:checked) ~ .route .route-segment,
+.motion-toggle:not(:checked) ~ .route .route-track,
 .motion-toggle:not(:checked) ~ .route .route-arrow,
 .motion-toggle:not(:checked) ~ .route .route-packet {
   animation-play-state: paused;
@@ -602,15 +726,16 @@ h3 {
   border-top: 2px solid;
 }
 
-.legend-promote {
+.legend-demand {
   color: var(--cyan);
 }
 
-.legend-prefetch {
+.legend-lookahead {
+  border-top-style: dotted;
   color: var(--coral);
 }
 
-.legend-background {
+.legend-system {
   border-top-style: dashed;
   color: var(--muted);
 }
@@ -974,57 +1099,87 @@ h3 {
   }
 }
 
-@keyframes lower-packet {
+@keyframes demand-packet {
   0%,
   13% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
   17% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  24% {
-    top: calc(50% - 0.24rem);
-    left: calc(100% - 0.24rem);
-    opacity: 1;
-  }
-  28% {
-    top: calc(50% - 0.24rem);
-    left: -0.24rem;
-    opacity: 1;
-  }
-  32% {
+  42% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  36%,
+  45%,
   100% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
 }
 
-@keyframes lower-link-pulse {
+@keyframes demand-link-pulse {
   0%,
   12%,
-  38%,
+  45%,
   100% {
     filter: none;
     opacity: 0.68;
   }
   17%,
-  32% {
+  37% {
+    filter: drop-shadow(0 0 0.45rem rgba(69, 211, 232, 0.8));
+    opacity: 1;
+  }
+}
+
+@keyframes lookahead-packet {
+  0%,
+  20% {
+    top: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 0;
+  }
+  24% {
+    top: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 1;
+  }
+  48% {
+    top: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 1;
+  }
+  51%,
+  100% {
+    top: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 0;
+  }
+}
+
+@keyframes lookahead-link-pulse {
+  0%,
+  18%,
+  53%,
+  100% {
+    filter: none;
+    opacity: 0.68;
+  }
+  24%,
+  45% {
     filter: drop-shadow(0 0 0.45rem rgba(255, 111, 103, 0.8));
     opacity: 1;
   }
 }
 
-@keyframes expert-cache-pulse {
+@keyframes expert-staging-pulse {
   0%,
   29%,
   55%,
@@ -1039,42 +1194,32 @@ h3 {
   }
 }
 
-@keyframes upper-packet {
+@keyframes h2d-packet {
   0%,
   45% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
   49% {
     top: calc(100% - 0.24rem);
-    left: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  56% {
-    top: calc(50% - 0.24rem);
-    left: calc(100% - 0.24rem);
-    opacity: 1;
-  }
-  60% {
-    top: calc(50% - 0.24rem);
-    left: -0.24rem;
-    opacity: 1;
-  }
-  65% {
+  70% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  69%,
+  72%,
   100% {
     top: -0.24rem;
-    left: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
     opacity: 0;
   }
 }
 
-@keyframes upper-link-pulse {
+@keyframes h2d-link-pulse {
   0%,
   44%,
   71%,
@@ -1107,56 +1252,6 @@ h3 {
     color: var(--bg-deep);
     filter: drop-shadow(0 0 0.72rem rgba(69, 211, 232, 0.78));
     transform: scale(1.08);
-  }
-}
-
-@keyframes lower-packet-mobile {
-  0%,
-  13% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-  17% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  32% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  36%,
-  100% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-}
-
-@keyframes upper-packet-mobile {
-  0%,
-  45% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-  49% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  65% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  69%,
-  100% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 0;
   }
 }
 
@@ -1262,41 +1357,32 @@ h3 {
     overflow: hidden;
   }
 
-  .route,
-  .route-promote,
-  .route-prefetch {
-    position: relative;
-    top: auto;
-    left: auto;
-    width: 100%;
+  .tier-vram-content {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .compute-lane {
+    padding: 1rem 0 0;
+    border-top: 1px solid rgba(66, 217, 238, 0.4);
+    border-left: 0;
+  }
+
+  .route-h2d {
     height: 3.1rem;
-    justify-self: center;
   }
 
-  .route-target {
-    top: 0.58rem;
-    left: calc(50% - 1.5px);
-    height: calc(100% - 0.58rem);
-    border-bottom: 0;
-    border-bottom-left-radius: 0;
+  .route-storage {
+    height: 5.15rem;
   }
 
-  .route-bridge,
-  .route-source {
-    display: none;
+  .route-system-layer {
+    top: 1.15rem;
+    max-width: 44%;
   }
 
-  .route-arrow {
-    top: -0.38rem;
-    left: calc(50% - 0.75rem);
-  }
-
-  .route-prefetch .route-packet {
-    animation-name: lower-packet-mobile;
-  }
-
-  .route-promote .route-packet {
-    animation-name: upper-packet-mobile;
+  .route-storage .route-label {
+    font-size: 0.61rem;
   }
 
   .memory-legend {
@@ -1441,9 +1527,9 @@ h3 {
   }
 
   .memory-system .expert-path-source,
-  .memory-system .expert-path-cache,
+  .memory-system .expert-path-staging,
   .memory-system .expert-path-active,
-  .memory-system .route-segment,
+  .memory-system .route-track,
   .memory-system .route-arrow,
   .memory-system .route-packet {
     animation: none !important;

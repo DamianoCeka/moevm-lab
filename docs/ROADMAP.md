@@ -54,6 +54,11 @@ been shown to track end-to-end measurements within a documented error band.
   and free-slot state, with explicit decision counters;
 - [x] fail-closed measured per-pass pipeline profiles bound to the exact GPU,
   workload, cache budget and runtime/benchmark hashes;
+- [x] opt-in same-device CUDA-event telemetry for paged-expert H2D and
+  paged-expert-compute intervals;
+- [ ] collect and publish repeated, paired CUDA-timeline captures; the
+  instrumentation is implemented, but no accepted capture exists yet and it is
+  not overlap or speedup evidence on its own;
 - [ ] online timing- and queue-aware adaptive policy that generalizes beyond a
   calibrated workload;
 
@@ -63,10 +68,13 @@ the empty-cache pass is slower. The 36-pair RTX 6000 Ada follow-up finds a
 positive five-workload core result but also retained-cache regressions at longer
 continuations. The async work remains an opt-in, one-worker MVP over
 mmap/page-cache-backed storage; it is not proof of direct physical NVMe overlap.
-**Exit criterion still open:** measured profiles remain workload-specific;
-longer free-running generation, concurrency, cross-workload validation and
-common CUDA-timeline evidence are still required before a general performance
-claim.
+Opt-in CUDA-event telemetry can now collect same-device paged-expert H2D versus
+expert-compute interval evidence, but no accepted paired capture has yet been
+published. Even a future capture will not by itself prove physical storage
+activity or a general speedup. **Exit criterion still open:** measured profiles
+remain workload-specific; repeated paired timeline captures, longer free-running
+generation, concurrency and cross-workload validation are still required before
+a general performance claim.
 
 ## M4 — Storage-aware expert runtime
 
