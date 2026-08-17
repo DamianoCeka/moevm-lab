@@ -300,6 +300,10 @@ h3 {
     0 1rem 2.5rem rgba(0, 0, 0, 0.12);
 }
 
+.tier-staging {
+  border-color: rgba(255, 111, 103, 0.62);
+}
+
 .tier-identity,
 .tier-content {
   position: relative;
@@ -348,6 +352,10 @@ h3 {
   color: var(--cyan);
 }
 
+.tier-staging .tier-name strong {
+  color: var(--coral);
+}
+
 .tier-name span,
 .tier-content-label {
   color: var(--muted);
@@ -359,6 +367,35 @@ h3 {
   margin-bottom: 0.78rem;
   font-size: 1.05rem;
   line-height: 1.25;
+}
+
+.tier-vram-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11.5rem, 0.74fr);
+  gap: clamp(1rem, 2vw, 1.65rem);
+  align-items: stretch;
+}
+
+.compute-lane {
+  display: grid;
+  align-content: center;
+  gap: 0.42rem;
+  padding-left: clamp(1rem, 1.8vw, 1.5rem);
+  border-left: 1px solid rgba(66, 217, 238, 0.4);
+}
+
+.compute-label {
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 760;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.compute-copy {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .expert-row {
@@ -400,12 +437,42 @@ h3 {
   margin-left: auto;
 }
 
+.staging-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.staging-chip {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  padding: 0.42rem 0.72rem;
+  border: 1px solid var(--coral);
+  border-radius: 0.34rem;
+  background: rgba(255, 111, 103, 0.08);
+  color: var(--coral);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 680;
+}
+
+.staging-chip-muted {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-weight: 560;
+}
+
 .expert-path-source {
   animation: expert-source-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
-.expert-path-cache {
-  animation: expert-cache-pulse 4.6s ease-in-out 0.2s infinite both;
+.expert-path-staging {
+  animation: expert-staging-pulse 4.6s ease-in-out 0.2s infinite both;
 }
 
 .expert-path-active {
@@ -421,7 +488,6 @@ h3 {
 .route {
   position: relative;
   z-index: 4;
-  color: var(--cyan);
   pointer-events: none;
   align-self: center;
   width: 100%;
@@ -429,14 +495,27 @@ h3 {
   margin-inline: auto;
 }
 
-.route-promote {
-  --route-x: 41.44%;
+.route-h2d {
+  --route-x: 50%;
   color: var(--cyan);
-  --packet-phase-offset: 0.42s;
 }
 
-.route-prefetch {
-  --route-x: 59.78%;
+.route-storage {
+  height: 5rem;
+}
+
+.route-flow {
+  position: absolute;
+  inset: 0;
+}
+
+.route-flow-demand {
+  --route-x: 34%;
+  color: var(--cyan);
+}
+
+.route-flow-lookahead {
+  --route-x: 68%;
   color: var(--coral);
 }
 
@@ -452,14 +531,15 @@ h3 {
   width: 2.2px;
   height: 100%;
   border-radius: 999px;
-  background-image: linear-gradient(
+  background: currentColor;
+  opacity: 0.68;
+}
+
+.route-flow-lookahead .route-track {
+  background: repeating-linear-gradient(
     to bottom,
-    rgba(255, 255, 255, 0.72) 8%,
-    rgba(255, 255, 255, 0) 8%,
-    rgba(255, 255, 255, 0) 34%,
-    rgba(255, 255, 255, 0.8) 34%,
-    rgba(255, 255, 255, 0) 34.7%,
-    rgba(255, 255, 255, 0) 100%
+    currentColor 0 0.38rem,
+    transparent 0.38rem 0.7rem
   );
 }
 
@@ -475,13 +555,6 @@ h3 {
   filter: drop-shadow(0 0 0.42rem currentColor);
 }
 
-.route-prefetch .route-arrow {
-  border-top: 0.84rem solid currentColor;
-  border-bottom: 0;
-  top: auto;
-  bottom: -0.45rem;
-}
-
 .route-packet {
   top: calc(100% - 0.24rem);
   left: calc(var(--route-x) - 0.24rem);
@@ -495,7 +568,7 @@ h3 {
 }
 
 .route-label {
-  top: -0.15rem;
+  top: -0.24rem;
   right: 0;
   left: 0;
   margin-inline: auto;
@@ -515,29 +588,72 @@ h3 {
   opacity: 0.85;
 }
 
-.route-prefetch .route-label {
-  top: auto;
-  bottom: -0.4rem;
+.route-storage .route-label {
+  top: 0.42rem;
+  right: auto;
+  left: calc(var(--route-x) + 1rem);
+  margin: 0;
 }
 
-.route-promote .route-track {
-  animation: upper-link-pulse 4.6s ease-in-out 0.2s infinite both;
+.route-flow-demand .route-label {
+  left: calc(var(--route-x) - 5rem);
 }
 
-.route-promote .route-packet {
-  animation: upper-packet 4.6s ease-in-out 0.2s infinite both;
+.route-system-layer {
+  position: absolute;
+  z-index: 2;
+  top: 1.05rem;
+  left: 50%;
+  display: grid;
+  width: max-content;
+  max-width: min(18rem, 42%);
+  gap: 0.1rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 0.4rem;
+  background: rgba(7, 16, 22, 0.94);
+  color: var(--muted);
+  text-align: center;
+  transform: translateX(-50%);
 }
 
-.route-prefetch .route-track {
-  animation: lower-link-pulse 4.6s ease-in-out 0.2s infinite both;
+.route-system-title {
+  color: var(--text);
+  font-size: 0.74rem;
+  font-weight: 680;
 }
 
-.route-prefetch .route-packet {
-  animation: lower-packet 4.6s ease-in-out 0.2s infinite both;
+.route-system-note {
+  color: var(--faint);
+  font-size: 0.67rem;
+}
+
+.route-h2d .route-track {
+  animation: h2d-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-h2d .route-packet {
+  animation: h2d-packet 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-demand .route-track {
+  animation: demand-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-demand .route-packet {
+  animation: demand-packet 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-lookahead .route-track {
+  animation: lookahead-link-pulse 4.6s ease-in-out 0.2s infinite both;
+}
+
+.route-flow-lookahead .route-packet {
+  animation: lookahead-packet 4.6s ease-in-out 0.2s infinite both;
 }
 
 .motion-toggle:not(:checked) ~ .tier .expert-path-source,
-.motion-toggle:not(:checked) ~ .tier .expert-path-cache,
+.motion-toggle:not(:checked) ~ .tier .expert-path-staging,
 .motion-toggle:not(:checked) ~ .tier .expert-path-active,
 .motion-toggle:not(:checked) ~ .route .route-track,
 .motion-toggle:not(:checked) ~ .route .route-arrow,
@@ -610,15 +726,16 @@ h3 {
   border-top: 2px solid;
 }
 
-.legend-promote {
+.legend-demand {
   color: var(--cyan);
 }
 
-.legend-prefetch {
+.legend-lookahead {
+  border-top-style: dotted;
   color: var(--coral);
 }
 
-.legend-background {
+.legend-system {
   border-top-style: dashed;
   color: var(--muted);
 }
@@ -982,7 +1099,7 @@ h3 {
   }
 }
 
-@keyframes lower-packet {
+@keyframes demand-packet {
   0%,
   13% {
     top: calc(100% - 0.24rem);
@@ -994,12 +1111,12 @@ h3 {
     left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  70% {
+  42% {
     top: -0.24rem;
     left: calc(var(--route-x) - 0.24rem);
     opacity: 1;
   }
-  72%,
+  45%,
   100% {
     top: -0.24rem;
     left: calc(var(--route-x) - 0.24rem);
@@ -1007,22 +1124,62 @@ h3 {
   }
 }
 
-@keyframes lower-link-pulse {
+@keyframes demand-link-pulse {
   0%,
   12%,
-  38%,
+  45%,
   100% {
     filter: none;
     opacity: 0.68;
   }
   17%,
-  32% {
+  37% {
+    filter: drop-shadow(0 0 0.45rem rgba(69, 211, 232, 0.8));
+    opacity: 1;
+  }
+}
+
+@keyframes lookahead-packet {
+  0%,
+  20% {
+    top: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 0;
+  }
+  24% {
+    top: calc(100% - 0.24rem);
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 1;
+  }
+  48% {
+    top: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 1;
+  }
+  51%,
+  100% {
+    top: -0.24rem;
+    left: calc(var(--route-x) - 0.24rem);
+    opacity: 0;
+  }
+}
+
+@keyframes lookahead-link-pulse {
+  0%,
+  18%,
+  53%,
+  100% {
+    filter: none;
+    opacity: 0.68;
+  }
+  24%,
+  45% {
     filter: drop-shadow(0 0 0.45rem rgba(255, 111, 103, 0.8));
     opacity: 1;
   }
 }
 
-@keyframes expert-cache-pulse {
+@keyframes expert-staging-pulse {
   0%,
   29%,
   55%,
@@ -1037,7 +1194,7 @@ h3 {
   }
 }
 
-@keyframes upper-packet {
+@keyframes h2d-packet {
   0%,
   45% {
     top: calc(100% - 0.24rem);
@@ -1062,7 +1219,7 @@ h3 {
   }
 }
 
-@keyframes upper-link-pulse {
+@keyframes h2d-link-pulse {
   0%,
   44%,
   71%,
@@ -1095,56 +1252,6 @@ h3 {
     color: var(--bg-deep);
     filter: drop-shadow(0 0 0.72rem rgba(69, 211, 232, 0.78));
     transform: scale(1.08);
-  }
-}
-
-@keyframes lower-packet-mobile {
-  0%,
-  13% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-  17% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  32% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  36%,
-  100% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-}
-
-@keyframes upper-packet-mobile {
-  0%,
-  45% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 0;
-  }
-  49% {
-    top: calc(100% - 0.24rem);
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  65% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 1;
-  }
-  69%,
-  100% {
-    top: -0.24rem;
-    left: calc(50% - 0.24rem);
-    opacity: 0;
   }
 }
 
@@ -1250,34 +1357,32 @@ h3 {
     overflow: hidden;
   }
 
-  .route,
-  .route-promote,
-  .route-prefetch {
-    position: relative;
-    top: auto;
-    left: auto;
-    width: 100%;
+  .tier-vram-content {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .compute-lane {
+    padding: 1rem 0 0;
+    border-top: 1px solid rgba(66, 217, 238, 0.4);
+    border-left: 0;
+  }
+
+  .route-h2d {
     height: 3.1rem;
-    justify-self: center;
   }
 
-  .route-track {
-    top: 0;
-    left: calc(50% - 1.5px);
-    height: 100%;
+  .route-storage {
+    height: 5.15rem;
   }
 
-  .route-arrow {
-    left: calc(50% - 0.48rem);
-    top: -0.45rem;
+  .route-system-layer {
+    top: 1.15rem;
+    max-width: 44%;
   }
 
-  .route-prefetch .route-packet {
-    animation-name: lower-packet-mobile;
-  }
-
-  .route-promote .route-packet {
-    animation-name: upper-packet-mobile;
+  .route-storage .route-label {
+    font-size: 0.61rem;
   }
 
   .memory-legend {
@@ -1422,7 +1527,7 @@ h3 {
   }
 
   .memory-system .expert-path-source,
-  .memory-system .expert-path-cache,
+  .memory-system .expert-path-staging,
   .memory-system .expert-path-active,
   .memory-system .route-track,
   .memory-system .route-arrow,

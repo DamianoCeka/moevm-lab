@@ -258,8 +258,17 @@ K3-shaped memory simulation:
 
 ```powershell
 .\.venv\Scripts\python.exe -m moevm doctor --config configs\k3_shape.toml
+.\.venv\Scripts\python.exe -m moevm doctor --config configs\k3_shape.toml --machine --cache-path D:\MoEVM-cache
 .\.venv\Scripts\python.exe -m moevm compare --config configs\k3_shape.toml --tokens 8 --output-dir results\k3-shape
 ```
+
+`doctor --machine` is a read-only inventory: it adds best-effort NVIDIA GPU,
+host-RAM and selected-volume observations to the configuration-derived memory
+ledger without opening a CUDA context, loading a model, downloading a checkpoint
+or benchmarking storage. It reports capacity and logical expert flow, not a
+guarantee that an arbitrary checkpoint fits or will be fast. Use
+`--no-gpu-probe` where `nvidia-smi` should not be called, or `--json` for a
+machine-readable report.
 
 ## Commands
 
@@ -267,7 +276,7 @@ K3-shaped memory simulation:
 moevm compare  Compare baseline and predictive prefetch
 moevm run      Run one mode and print metrics
 moevm trace    Generate a reusable JSONL routing trace
-moevm doctor   Validate configuration and display cache capacity
+moevm doctor   Validate configuration, memory ledger, and optional machine capacity
 moevm analyze-trace  Analyze locality, router scores and predictability
 moevm analyze-placement  Compare audited train/test placement policies
 ```
@@ -310,6 +319,7 @@ See [the roadmap](docs/ROADMAP.md) and [benchmarking rules](docs/BENCHMARKING.md
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Memory ledger: tiers, traffic and evidence](docs/MEMORY_LEDGER.md)
 - [Reference benchmarks](benchmarks/reference/README.md)
 - [Benchmarking rules](docs/BENCHMARKING.md)
 - [Real-routing capture protocol and findings](docs/REAL_ROUTING.md)

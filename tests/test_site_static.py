@@ -141,24 +141,26 @@ class StaticSiteTests(unittest.TestCase):
         css = (SITE / "styles.css").read_text(encoding="utf-8")
         for class_name in (
             "expert-path-source",
-            "expert-path-cache",
+            "expert-path-staging",
             "expert-path-active",
         ):
             self.assertEqual(1, self.html.count(class_name))
         for keyframes in (
             "@keyframes expert-source-pulse",
-            "@keyframes lower-packet",
-            "@keyframes expert-cache-pulse",
-            "@keyframes upper-packet",
+            "@keyframes demand-packet",
+            "@keyframes lookahead-packet",
+            "@keyframes expert-staging-pulse",
+            "@keyframes h2d-packet",
             "@keyframes expert-active-pulse",
         ):
             self.assertIn(keyframes, css)
         reduced_motion = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
         self.assertIn(".memory-system .expert-path-source", reduced_motion)
+        self.assertIn(".memory-system .expert-path-staging", reduced_motion)
         self.assertIn(".memory-system .route-packet", reduced_motion)
         self.assertIn("animation: none !important", reduced_motion)
         self.assertIn(".memory-system .motion-control", reduced_motion)
-        self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s infinite both"), 7)
+        self.assertGreaterEqual(css.count("4.6s ease-in-out 0.2s infinite both"), 9)
         self.assertIn("animation-play-state: paused", css)
         self.assertIn('id="memory-motion-toggle"', self.html)
         self.assertIn('for="memory-motion-toggle"', self.html)
@@ -167,7 +169,7 @@ class StaticSiteTests(unittest.TestCase):
         self.assertNotIn("will-change", css)
         self.assertNotIn("<script", self.html.casefold())
 
-    def test_memory_diagram_matches_hardware_reference_structure(self) -> None:
+    def test_memory_diagram_models_paged_tiers_accurately(self) -> None:
         css = (SITE / "styles.css").read_text(encoding="utf-8")
         self.assertIn(
             'class="memory-system"\n          aria-labelledby="memory-diagram-title"',
@@ -181,30 +183,48 @@ class StaticSiteTests(unittest.TestCase):
         ):
             self.assertEqual(1, self.html.count(f'src="{asset}"'))
         self.assertEqual(2, self.html.count('class="route route-'))
-        self.assertEqual(2, self.html.count('class="route-packet"'))
+        self.assertEqual(3, self.html.count('class="route-packet"'))
         self.assertEqual(3, self.html.count('class="legend-line '))
         self.assertNotIn('class="transfer ', self.html)
         self.assertRegex(
             css,
-            r"\.route-promote\s*\{[^}]*--route-x:\s*41\.44%;",
+            r"\.route-h2d\s*\{[^}]*--route-x:\s*50%;",
         )
         self.assertRegex(
             css,
-            r"\.route-prefetch\s*\{[^}]*--route-x:\s*59\.78%;",
+            r"\.route-flow-demand\s*\{[^}]*--route-x:\s*34%;",
         )
+        self.assertRegex(
+            css,
+            r"\.route-flow-lookahead\s*\{[^}]*--route-x:\s*68%;",
+        )
+        self.assertIn(".route-flow-lookahead .route-track", css)
+        self.assertIn("repeating-linear-gradient", css)
+        self.assertIn('class="route-label">Dedicated H2D stream</span>', self.html)
         self.assertIn('class="route-label">Demand</span>', self.html)
-        self.assertIn('class="route-label">Prefetch · Evict</span>', self.html)
+        self.assertIn('class="route-label">Lookahead</span>', self.html)
         self.assertIn(
+            'class="expert expert-active expert-path-active">E07</span>', self.html
+        )
+        self.assertNotIn(
             'class="expert expert-active expert-path-active">E01</span>', self.html
         )
-        self.assertNotIn('class="expert expert-path-active">E07</span>', self.html)
         for label in (
-            "Working set (active experts)",
-            "Cache of experts",
-            "Full expert library (cold)",
-            "Background maintenance",
+            "VRAM expert slots (bounded)",
+            "GPU compute",
+            "Router · attention · non-expert weights · KV state stay outside paged expert slots.",
+            "Bounded pinned RAM staging",
+            "not an expert cache",
+            "mmap / OS page cache",
+            "unobserved by MoEVM",
+            "NVMe checkpoint (cold)",
+            "Demand (solid)",
+            "Lookahead (dotted)",
+            "System layer · unobserved",
         ):
             self.assertIn(label, self.html)
+        self.assertNotIn("Cache of experts", self.html)
+        self.assertNotIn("through the RAM cache", self.html)
 
     def test_no_private_paths_or_contact_claims(self) -> None:
         self.assertNotRegex(

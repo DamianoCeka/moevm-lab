@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a read-only `moevm doctor --machine` report that keeps observed GPU,
+  host-RAM and selected-volume capacity separate from the configuration-derived
+  expert memory ledger. It does not open CUDA, load a checkpoint, benchmark
+  storage or claim model fit/performance.
+- Added an original memory-ledger guide and corrected the public memory-flow
+  diagram to distinguish the simulator's logical RAM LRU from the runtime's
+  bounded pinned staging and unobserved OS page-cache path.
 - Added opt-in same-device CUDA-event telemetry for paged-expert H2D and
   expert-compute intervals, a fail-closed telemetry-aware pair gate, and a
   create-only accessible SVG timeline renderer. This instruments one model call

@@ -84,8 +84,13 @@
           aria-labelledby="memory-diagram-title"
         >
           <figcaption id="memory-diagram-title" class="visually-hidden">
-            Animated illustration of expert traffic moving from the full NVMe
-            library through the RAM cache into the active VRAM working set.
+            Memory-flow illustration. Cold expert tensors begin in the NVMe
+            checkpoint. Mmap and OS page-cache behavior is an unobserved system
+            layer. A bounded pinned-RAM staging buffer supplies a dedicated
+            H2D stream to bounded VRAM expert slots. GPU compute also uses
+            non-expert weights, router, attention, and KV state outside the
+            paged expert slots. Solid arrows show demand; dotted arrows show
+            lookahead.
           </figcaption>
           <input
             class="motion-toggle visually-hidden"
@@ -108,26 +113,32 @@
                 <span>Fast · Small</span>
               </div>
             </div>
-            <div class="tier-content">
-              <span class="tier-content-label">Working set (active experts)</span>
-              <div class="expert-row" aria-hidden="true">
-                <span class="expert expert-active expert-path-active">E01</span>
-                <span class="expert">E07</span>
-                <span class="expert">E12</span>
-                <span class="ellipsis">•••</span>
-                <span class="expert expert-dashed">EN</span>
+            <div class="tier-content tier-vram-content">
+              <div class="vram-slots">
+                <span class="tier-content-label">VRAM expert slots (bounded)</span>
+                <div class="expert-row" aria-hidden="true">
+                  <span class="expert">E01</span>
+                  <span class="expert expert-active expert-path-active">E07</span>
+                  <span class="expert">E12</span>
+                  <span class="ellipsis">•••</span>
+                  <span class="expert expert-dashed">EN</span>
+                </div>
+              </div>
+              <div class="compute-lane">
+                <span class="compute-label">GPU compute</span>
+                <span class="compute-copy">Router · attention · non-expert weights · KV state stay outside paged expert slots.</span>
               </div>
             </div>
           </div>
 
-          <div class="route route-promote" aria-hidden="true">
+          <div class="route route-h2d" aria-hidden="true">
             <span class="route-track" aria-hidden="true"></span>
             <span class="route-arrow"></span>
             <span class="route-packet"></span>
-            <span class="route-label">Demand</span>
+            <span class="route-label">Dedicated H2D stream</span>
           </div>
 
-          <div class="tier tier-ram">
+          <div class="tier tier-staging">
             <div class="tier-identity">
               <img
                 class="tier-icon tier-icon-ram"
@@ -137,29 +148,36 @@
                 height="64"
               />
               <div class="tier-name">
-                <strong>RAM</strong>
-                <span>Larger · Slower</span>
+                <strong>Pinned RAM</strong>
+                <span>Bounded · Transfer-only</span>
               </div>
             </div>
             <div class="tier-content">
-              <span class="tier-content-label">Cache of experts</span>
-              <div class="expert-row" aria-hidden="true">
-                <span class="expert">E02</span>
-                <span class="expert">E04</span>
-                <span class="expert expert-warm expert-path-cache">E07</span>
-                <span class="expert expert-secondary">E15</span>
-                <span class="expert expert-secondary">E23</span>
-                <span class="ellipsis">•••</span>
-                <span class="expert expert-dashed">EN</span>
+              <span class="tier-content-label">Bounded pinned RAM staging</span>
+              <div class="staging-row" aria-hidden="true">
+                <span class="staging-chip expert-path-staging">E07 payload</span>
+                <span class="staging-chip staging-chip-muted">not an expert cache</span>
               </div>
             </div>
           </div>
 
-          <div class="route route-prefetch" aria-hidden="true">
-            <span class="route-track" aria-hidden="true"></span>
-            <span class="route-arrow"></span>
-            <span class="route-packet"></span>
-            <span class="route-label">Prefetch · Evict</span>
+          <div class="route route-storage" aria-hidden="true">
+            <div class="route-system-layer">
+              <span class="route-system-title">mmap / OS page cache</span>
+              <span class="route-system-note">unobserved by MoEVM</span>
+            </div>
+            <div class="route-flow route-flow-demand">
+              <span class="route-track"></span>
+              <span class="route-arrow"></span>
+              <span class="route-packet"></span>
+              <span class="route-label">Demand</span>
+            </div>
+            <div class="route-flow route-flow-lookahead">
+              <span class="route-track"></span>
+              <span class="route-arrow"></span>
+              <span class="route-packet"></span>
+              <span class="route-label">Lookahead</span>
+            </div>
           </div>
 
           <div class="tier tier-nvme">
@@ -173,11 +191,11 @@
               />
               <div class="tier-name">
                 <strong>NVMe</strong>
-                <span>Largest · Slowest</span>
+                <span>Cold · Backing store</span>
               </div>
             </div>
             <div class="tier-content">
-              <span class="tier-content-label">Full expert library (cold)</span>
+              <span class="tier-content-label">NVMe checkpoint (cold)</span>
               <div class="expert-row" aria-hidden="true">
                 <span class="expert">E00</span>
                 <span class="expert">E01</span>
@@ -191,9 +209,9 @@
           </div>
 
           <div class="memory-legend" aria-label="Transfer legend">
-            <span><i class="legend-line legend-promote"></i>Promote (on demand)</span>
-            <span><i class="legend-line legend-prefetch"></i>Prefetch / Evict</span>
-            <span><i class="legend-line legend-background"></i>Background maintenance</span>
+            <span><i class="legend-line legend-demand"></i>Demand (solid)</span>
+            <span><i class="legend-line legend-lookahead"></i>Lookahead (dotted)</span>
+            <span><i class="legend-line legend-system"></i>System layer · unobserved</span>
             <label class="motion-control" for="memory-motion-toggle" aria-hidden="true">
               <span class="motion-control-pause">Pause motion</span>
               <span class="motion-control-play">Play motion</span>
