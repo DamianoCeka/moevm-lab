@@ -42,7 +42,16 @@
 
     <main id="main">
       <section class="hero section-shell" id="top" aria-labelledby="hero-title">
-        <div class="hero-copy">
+        <div class="hero-showcase">
+          <img
+            class="hero-art"
+            src="assets/visuals/moevm-memory-flow-hero.png"
+            alt=""
+            width="1823"
+            height="863"
+            fetchpriority="high"
+          />
+          <div class="hero-copy">
           <h1 id="hero-title">
             Expert-aware memory virtualization for sparse MoE inference.
           </h1>
@@ -77,6 +86,7 @@
             Not a Kimi K3 runtime. No production-serving or universal speedup
             claim. OLMoE-first prototype (public revision-pinned).
           </p>
+          </div>
         </div>
 
         <figure
@@ -292,6 +302,24 @@
           <h2 id="workflow-title">From routing trace to a hardware decision.</h2>
         </div>
 
+        <figure class="workflow-visual">
+          <img
+            src="assets/visuals/sparse-expert-routing.png"
+            alt=""
+            width="1536"
+            height="1024"
+            loading="lazy"
+          />
+          <figcaption>
+            <span class="visual-kicker">Sparse by design</span>
+            <strong>Route a few experts. Keep the rest cold.</strong>
+            <span>
+              MoEVM studies which expert payloads should move, when they should
+              move, and how much memory the working set really needs.
+            </span>
+          </figcaption>
+        </figure>
+
         <ol class="workflow-rail">
           <li>
             <span class="workflow-index">1</span>
@@ -416,7 +444,8 @@
       <p class="asset-credit">
         GPU and RAM icons by
         <a href="https://icons8.com/" rel="noopener noreferrer">Icons8</a>.
-        NVMe artwork supplied by the project owner.
+        NVMe artwork supplied by the project owner. Original technical
+        illustrations generated specifically for MoEVM Lab.
       </p>
     </footer>
   </body>

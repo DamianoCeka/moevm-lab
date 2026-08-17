@@ -59,8 +59,21 @@ class StaticSiteTests(unittest.TestCase):
             "assets/icons/arrow-up-bold.svg",
             "assets/icons/LICENSE.phosphor-icons",
             "assets/icons/ASSET_PROVENANCE.md",
+            "assets/visuals/moevm-memory-flow-hero.png",
+            "assets/visuals/sparse-expert-routing.png",
+            "assets/visuals/ASSET_PROVENANCE.md",
         ):
             self.assertTrue((SITE / name).is_file(), name)
+
+    def test_generated_visuals_are_local_and_wired_to_the_page(self) -> None:
+        for asset in (
+            "assets/visuals/moevm-memory-flow-hero.png",
+            "assets/visuals/sparse-expert-routing.png",
+        ):
+            self.assertEqual(1, self.html.count(f'src="{asset}"'))
+            self.assertGreater((SITE / asset).stat().st_size, 100_000)
+        self.assertIn('class="hero-showcase"', self.html)
+        self.assertIn('class="workflow-visual"', self.html)
 
     def test_user_supplied_hardware_assets_are_exact(self) -> None:
         expected = {
@@ -201,6 +214,10 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn(".route-flow-lookahead .route-track", css)
         self.assertIn("repeating-linear-gradient", css)
         self.assertIn('class="route-label">Dedicated H2D stream</span>', self.html)
+        self.assertRegex(
+            css,
+            r"\.route-h2d \.route-label\s*\{[^}]*z-index:\s*3;[^}]*background:\s*var\(--bg\);",
+        )
         self.assertIn('class="route-label">Demand</span>', self.html)
         self.assertIn('class="route-label">Lookahead</span>', self.html)
         self.assertIn(
