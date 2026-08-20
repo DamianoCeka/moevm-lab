@@ -40,6 +40,17 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.hardware.fixed_latency_scope, "per_expert")
 
+    def test_loads_qwen1_5_moe_profile(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        config = load_config(root / "configs" / "qwen1_5_moe_a2_7b.toml")
+
+        self.assertEqual(config.model.name, "Qwen/Qwen1.5-MoE-A2.7B")
+        self.assertEqual(config.model.layers, 24)
+        self.assertEqual(config.model.experts_per_layer, 60)
+        self.assertEqual(config.model.top_k, 4)
+        self.assertEqual(config.model.expert_size_mib, 16.5)
+        self.assertEqual(config.trace.seed, 17)
+
     def test_rejects_non_finite_bandwidth(self) -> None:
         hardware = HardwareConfig(
             vram_cache_mib=1.0,
@@ -92,6 +103,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             Path(_bundled_config("olmoe_rtx3080ti_p310.toml")).read_bytes(),
             (root / "configs" / "olmoe_rtx3080ti_p310.toml").read_bytes(),
+        )
+        self.assertEqual(
+            Path(_bundled_config("qwen1_5_moe_a2_7b.toml")).read_bytes(),
+            (root / "configs" / "qwen1_5_moe_a2_7b.toml").read_bytes(),
         )
 
 

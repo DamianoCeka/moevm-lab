@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture token/layer expert routing from a pinned open OLMoE checkpoint."""
+"""Capture token/layer expert routing from supported pinned MoE checkpoints."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from moevm import qwen2_moe_assets
 from moevm.analysis import analyze_routing_trace, write_trace_analysis
 from moevm.config import load_config
 from moevm.olmoe_assets import (
@@ -32,11 +33,20 @@ from moevm.trace import read_trace
 
 DEFAULT_MODEL = PINNED_MODEL_ID
 DEFAULT_REVISION = PINNED_REVISION
+QWEN_MODEL_LICENSE = "Tongyi Qianwen License Agreement"
+QWEN_LICENSE_NOTICE = (
+    "Third-party checkpoint license; not covered by MoEVM Lab's Apache-2.0 license."
+)
+CUSTOM_MODEL_LICENSE = "Unknown (not asserted)"
+CUSTOM_LICENSE_NOTICE = (
+    "Custom third-party checkpoint license was not verified by MoEVM Lab; "
+    "review and comply with its upstream terms."
+)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture real OLMoE router decisions into MoEVM JSONL traces."
+        description="Capture real router decisions into MoEVM JSONL traces."
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--revision", default=DEFAULT_REVISION)
@@ -268,6 +278,94 @@ def _verify_pinned_shards(snapshot_path: Path) -> dict[str, str]:
     return verified
 
 
+def _is_pinned_qwen_request(model_id: str, revision: str) -> bool:
+    """Return whether a request names the one supported pinned Qwen checkpoint."""
+
+    if model_id != qwen2_moe_assets.MANIFEST.model_id:
+        return False
+    if revision != qwen2_moe_assets.MANIFEST.revision:
+        raise ValueError(
+            "Qwen routing capture requires the pinned revision "
+            f"{qwen2_moe_assets.MANIFEST.revision}; received {revision}"
+        )
+    return True
+
+
+def _checkpoint_license(model_id: str, revision: str) -> tuple[str, str | None]:
+    """Return checkpoint license evidence without relicensing third-party assets."""
+
+    if _is_pinned_qwen_request(model_id, revision):
+        return QWEN_MODEL_LICENSE, QWEN_LICENSE_NOTICE
+    if model_id == DEFAULT_MODEL and revision == DEFAULT_REVISION:
+        return "Apache-2.0", None
+    return CUSTOM_MODEL_LICENSE, CUSTOM_LICENSE_NOTICE
+
+
+def _verified_file_digests(
+    verified: Mapping[str, Mapping[str, int | str]],
+) -> dict[str, str]:
+    """Normalize complete Qwen verification evidence against its manifest."""
+
+    manifest = qwen2_moe_assets.MANIFEST
+    if set(verified) != set(manifest.required_files):
+        raise RuntimeError("Qwen snapshot verification did not cover the full manifest")
+    digests: dict[str, str] = {}
+    for filename in manifest.required_files:
+        evidence = verified[filename]
+        digest = evidence.get("sha256")
+        if digest != manifest.file_sha256[filename]:
+            raise RuntimeError(
+                f"Qwen verification evidence mismatch for {filename}: "
+                f"{digest} != {manifest.file_sha256[filename]}"
+            )
+        digests[filename] = str(digest)
+    return digests
+
+
+def _verify_requested_checkpoint(
+    *,
+    model_id: str,
+    revision: str,
+    snapshot_path: Path,
+) -> tuple[dict[str, str] | None, dict[str, str] | None]:
+    """Verify built-in checkpoints and return file/shard digest evidence."""
+
+    if _is_pinned_qwen_request(model_id, revision):
+        verified = qwen2_moe_assets.verify_pinned_snapshot(snapshot_path)
+        file_digests = _verified_file_digests(verified)
+        for filename in qwen2_moe_assets.MANIFEST.required_files:
+            print(f"Verified {filename}: {file_digests[filename]}")
+        shard_digests = {
+            filename: file_digests[filename]
+            for filename in qwen2_moe_assets.PINNED_SHARD_SHA256
+        }
+        return file_digests, shard_digests
+    if model_id == DEFAULT_MODEL and revision == DEFAULT_REVISION:
+        return None, _verify_pinned_shards(snapshot_path)
+    print("No built-in checkpoint hashes are available for this custom revision.")
+    return None, None
+
+
+def _normalize_resolved_revision(
+    config: Any,
+    *,
+    model_id: str,
+    requested_revision: str,
+) -> str | None:
+    """Validate the loaded revision, normalizing missing Qwen Hub metadata."""
+
+    is_qwen = _is_pinned_qwen_request(model_id, requested_revision)
+    resolved_revision = getattr(config, "_commit_hash", None)
+    if resolved_revision is None and is_qwen:
+        return qwen2_moe_assets.MANIFEST.revision
+    if resolved_revision not in (None, requested_revision):
+        raise RuntimeError(
+            f"resolved model revision {resolved_revision} != requested "
+            f"{requested_revision}"
+        )
+    return resolved_revision
+
+
 def _capture_workload(
     *,
     torch: Any,
@@ -373,6 +471,27 @@ def _capture_workload(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
+    model_license, license_notice = _checkpoint_license(args.model, args.revision)
+    model_metadata: dict[str, object] = {
+        "id": args.model,
+        "requested_revision": args.revision,
+        "resolved_revision": getattr(
+            args,
+            "resolved_revision",
+            getattr(model.config, "_commit_hash", None),
+        ),
+        "license": model_license,
+        "layers": config.model.layers,
+        "experts_per_layer": config.model.experts_per_layer,
+        "top_k": config.model.top_k,
+        "checkpoint_shards_sha256": getattr(args, "checkpoint_shards_sha256", None),
+    }
+    if license_notice is not None:
+        model_metadata["license_notice"] = license_notice
+    if _is_pinned_qwen_request(args.model, args.revision):
+        model_metadata["checkpoint_files_sha256"] = getattr(
+            args, "checkpoint_files_sha256", None
+        )
     metadata: dict[str, object] = {
         "schema_version": 1,
         "evidence_label": "routing capture",
@@ -386,16 +505,7 @@ def _capture_workload(
             "workload_file": str(workload_path),
             "workload_file_sha256": _sha256(workload_path),
         },
-        "model": {
-            "id": args.model,
-            "requested_revision": args.revision,
-            "resolved_revision": getattr(model.config, "_commit_hash", None),
-            "license": "Apache-2.0",
-            "layers": config.model.layers,
-            "experts_per_layer": config.model.experts_per_layer,
-            "top_k": config.model.top_k,
-            "checkpoint_shards_sha256": getattr(args, "checkpoint_shards_sha256", None),
-        },
+        "model": model_metadata,
         "generation": {
             "seed": args.seed,
             "temperature": args.temperature,
@@ -464,6 +574,7 @@ def main() -> int:
         raise ValueError("token limits must be positive (new tokens may be zero)")
     if args.temperature < 0:
         raise ValueError("--temperature cannot be negative")
+    _is_pinned_qwen_request(args.model, args.revision)
     workload_path = Path(args.workloads).resolve()
     workloads = _load_workloads(workload_path, set(args.workload_id))
     cache_dir = Path(args.cache_dir).resolve()
@@ -491,11 +602,14 @@ def main() -> int:
         snapshot_download=snapshot_download,
     )
     print(f"Pinned snapshot: {snapshot_path}")
-    if args.model == DEFAULT_MODEL and args.revision == DEFAULT_REVISION:
-        args.checkpoint_shards_sha256 = _verify_pinned_shards(snapshot_path)
-    else:
-        args.checkpoint_shards_sha256 = None
-        print("No built-in checkpoint hashes are available for this custom revision.")
+    (
+        args.checkpoint_files_sha256,
+        args.checkpoint_shards_sha256,
+    ) = _verify_requested_checkpoint(
+        model_id=args.model,
+        revision=args.revision,
+        snapshot_path=snapshot_path,
+    )
     if args.download_only:
         return 0
     if not torch.cuda.is_available():
@@ -529,11 +643,11 @@ def main() -> int:
     model_load_seconds = time.perf_counter() - load_started
     print(f"Loaded checkpoint in {model_load_seconds:.3f} seconds")
     model.eval()
-    resolved_revision = getattr(model.config, "_commit_hash", None)
-    if resolved_revision not in (None, args.revision):
-        raise RuntimeError(
-            f"resolved model revision {resolved_revision} != requested {args.revision}"
-        )
+    args.resolved_revision = _normalize_resolved_revision(
+        model.config,
+        model_id=args.model,
+        requested_revision=args.revision,
+    )
     if model.config.num_hidden_layers != config.model.layers:
         raise RuntimeError("model layer count does not match the replay config")
     if model.config.num_experts != config.model.experts_per_layer:

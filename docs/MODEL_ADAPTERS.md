@@ -21,11 +21,15 @@ modules for these model types:
 |---|---|---|
 | `olmoe` | Supported | Tiny exact parity plus pinned full-checkpoint correctness and performance studies |
 | `mixtral` | Supported experimentally | Tiny exact logits parity through the meta loader and paged runtime |
+| `qwen2_moe` | Supported experimentally | Tiny exact logits parity through the meta loader and paged runtime, including the resident shared expert |
 
-Both adapters require decoder layers at `model.layers[*].mlp.experts`, SiLU
+These adapters require decoder layers at `model.layers[*].mlp.experts`, SiLU
 experts, and the packed `gate_up_proj` plus `down_proj` interface used by the
-pinned Transformers version. Unsupported model types fail before the runtime is
-attached.
+pinned Transformers version. OLMoE and Mixtral obtain the routed-expert width
+from `intermediate_size`; Qwen2MoE uses `moe_intermediate_size`. Qwen2MoE's
+shared expert and its sigmoid gate remain ordinary resident model parameters:
+they are loaded by the non-expert loader and are not represented as paged cache
+slots. Unsupported model types fail before the runtime is attached.
 
 ## Checkpoint boundary
 
@@ -42,6 +46,12 @@ audited, create-new conversion step before it can use this store. The adapter
 does not rewrite a checkpoint, download weights or claim that an arbitrary Hub
 artifact is compatible.
 
+The pinned `Qwen/Qwen1.5-MoE-A2.7B` revision uses the normalized per-expert
+names above and is therefore the selected public acceptance candidate. That
+structural match is not itself full-checkpoint validation. Its separate Tongyi
+Qianwen license and the no-redistribution boundary are documented in
+[Third-party models and tools](THIRD_PARTY_MODELS.md).
+
 ## Evidence boundary
 
 The Mixtral test proves that the shared runtime can replace its expert backend,
@@ -54,5 +64,23 @@ establish:
 - memory reduction or speed on Mixtral;
 - free-running generation, concurrency or production serving behavior.
 
-The next acceptance gate is one pinned public second-model checkpoint with
-verified shard provenance, exact greedy-token parity and a controlled baseline.
+The Qwen2MoE tiny test independently proves exact eager-versus-paged logits on a
+deterministic tiny configuration whose shared expert remains resident and is
+loaded through the non-expert path. Those synthetic weights are created by the
+test and are not Qwen checkpoint weights.
+
+For the pinned `Qwen/Qwen1.5-MoE-A2.7B` checkpoint, this repository has now
+completed local deterministic full-checkpoint capture and sync-path parity gate:
+
+- full-manifest integrity checks for required snapshot files;
+- exact greedy-token parity against pinned reference on one controlled prompt
+  (`2/2` tokens matched);
+- bounded sync run accounting and fit diagnostics for that smoke prompt.
+
+It is still a **correctness-smoke** only path: no throughput claim, no production
+serving, no concurrency study, and no general benchmark across seeds/lengths/hardware.
+
+Next research steps are to rerun Qwen under the same gated protocol for broader
+controls (or a multi-prompt sweep) before any speed claim. Granite 4 H-Tiny and
+gpt-oss-20b remain later research candidates only; neither is an implemented or
+validated MoEVM adapter.

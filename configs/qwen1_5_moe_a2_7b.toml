@@ -1,0 +1,45 @@
+# Architecture-shaped simulation profile for the pinned Qwen1.5-MoE-A2.7B
+# checkpoint. Hardware, timing and synthetic-trace values below are unmeasured
+# hypotheses for replay experiments; they are not benchmark results.
+
+[model]
+name = "Qwen/Qwen1.5-MoE-A2.7B"
+layers = 24
+experts_per_layer = 60
+top_k = 4
+# BF16 routed payload: gate + up + down projections for one 2048 x 1408 expert.
+expert_size_mib = 16.5
+# Provisional replay parameter, not a measured Qwen2-MoE kernel latency.
+compute_ms_per_layer = 1.0
+
+[hardware]
+# Uncalibrated workstation replay assumptions. Replace these values with a
+# machine-specific transfer calibration before interpreting absolute timings.
+vram_cache_mib = 4096.0
+ram_cache_mib = 12288.0
+ram_to_vram_gbps = 22.0
+nvme_to_ram_gbps = 7.0
+ram_latency_us = 8.0
+nvme_latency_us = 80.0
+overlap_efficiency = 0.85
+prefetch_vram_fraction = 0.125
+
+[trace]
+# Synthetic routing hypothesis only; ignored when --trace is supplied.
+tokens = 64
+domains = 4
+domain_switch_probability = 0.08
+hotset_multiplier = 3.0
+temporal_reuse_probability = 0.50
+random_expert_probability = 0.10
+seed = 17
+
+[predictor]
+enabled = true
+prefetch_count = 4
+frequency_weight = 0.0
+temporal_weight = 5.0
+cross_layer_weight = 1.0
+max_targets_per_source = 60
+min_relative_confidence = 0.15
+deadline_aware = true
