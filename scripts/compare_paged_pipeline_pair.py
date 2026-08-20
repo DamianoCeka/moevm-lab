@@ -856,6 +856,8 @@ def _compare_identity(sync: dict[str, Any], async_: dict[str, Any]) -> None:
     async_model = dict(_mapping(async_.get("model"), "async.model"))
     sync_model.pop("hash_verification_seconds", None)
     async_model.pop("hash_verification_seconds", None)
+    sync_model.pop("preflight_hash_verification_seconds", None)
+    async_model.pop("preflight_hash_verification_seconds", None)
     _require_equal(sync_model, async_model, "model identity")
 
     sync_runtime = _mapping(sync.get("runtime"), "sync.runtime")

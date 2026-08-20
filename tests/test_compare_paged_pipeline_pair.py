@@ -512,6 +512,18 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    def test_model_hash_verification_durations_are_not_identity_fields(self) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        sync["model"]["hash_verification_seconds"] = 10.0
+        async_["model"]["hash_verification_seconds"] = 11.0
+        sync["model"]["preflight_hash_verification_seconds"] = 28.3
+        async_["model"]["preflight_hash_verification_seconds"] = 28.1
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
     def test_cuda_overlap_telemetry_setting_must_match_within_a_pair(self) -> None:
         sync = self._report("sync")
         async_ = self._report("async")
