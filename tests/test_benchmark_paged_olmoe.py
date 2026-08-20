@@ -162,7 +162,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_max_new_tokens("65")
 
-    def test_qwen_profile_is_reference_gated_and_sync_only(self) -> None:
+    def test_qwen_profile_is_reference_gated_and_sync_async_only(self) -> None:
         reference_path = self.root / "qwen-reference.json"
         args = self._args(
             "--checkpoint",
@@ -181,11 +181,22 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(profile.top_k, 4)
         self.assertEqual(profile.expert_intermediate_size, 1408)
         self.assertTrue(profile.reference_required)
-        self.assertTrue(profile.sync_only)
+        self.assertEqual(profile.allowed_pipelines, ("sync", "async"))
 
         with self.assertRaisesRegex(ValueError, "requires --reference-metadata"):
             _HARNESS._validate_args(self._args("--checkpoint", "qwen2-moe"))
-        with self.assertRaisesRegex(ValueError, "only supports --pipeline sync"):
+        async_args = self._args(
+            "--checkpoint",
+            "qwen2-moe",
+            "--reference-metadata",
+            str(reference_path),
+            "--pipeline",
+            "async",
+            "--staging-slots",
+            "2",
+        )
+        _HARNESS._validate_args(async_args)
+        with self.assertRaisesRegex(ValueError, "only supports these pipelines"):
             _HARNESS._validate_args(
                 self._args(
                     "--checkpoint",
@@ -193,7 +204,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
                     "--reference-metadata",
                     str(reference_path),
                     "--pipeline",
-                    "async",
+                    "adaptive",
                     "--staging-slots",
                     "2",
                 )

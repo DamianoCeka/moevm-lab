@@ -657,13 +657,106 @@ def _pass_metric_scopes(
     return scopes, pass_metrics
 
 
-def _validate_mode(payload: dict[str, Any], mode: str) -> dict[str, Any]:
+def _validate_qwen_correctness_smoke(
+    payload: dict[str, Any],
+    mode: str,
+    evidence: dict[str, Any],
+) -> None:
+    """Require the narrow, non-publishable full-checkpoint acceptance contract."""
+
+    if evidence.get("publishable_benchmark_evidence") is not False:
+        raise ValueError(
+            f"{mode}: correctness-smoke input must be explicitly non-publishable"
+        )
+    if evidence.get("offline_local_only") is not True:
+        raise ValueError(f"{mode}: correctness smoke must be offline-local-only")
+
+    model = _mapping(payload.get("model"), f"{mode}.model")
+    if model.get("checkpoint_profile") != "qwen2-moe":
+        raise ValueError(
+            f"{mode}: correctness-smoke comparison only supports qwen2-moe"
+        )
+    if model.get("verification_scope") != "full_required_file_manifest":
+        raise ValueError(
+            f"{mode}: qwen2-moe correctness smoke requires full-manifest verification"
+        )
+    if model.get("preflight_full_manifest_verified") is not True:
+        raise ValueError(
+            f"{mode}: qwen2-moe correctness smoke requires pre-use manifest verification"
+        )
+    verified_files = _mapping(model.get("verified_files"), f"{mode}.verified_files")
+    if not verified_files:
+        raise ValueError(f"{mode}: verified_files cannot be empty")
+
+    reference = _mapping(
+        payload.get("reference_comparison"), f"{mode}.reference_comparison"
+    )
+    if (
+        reference.get("available") is not True
+        or reference.get("matched") is not True
+        or reference.get("mode") != "autoregressive_exact_gate"
+        or reference.get("first_mismatch_index") is not None
+    ):
+        raise ValueError(
+            f"{mode}: correctness smoke requires an exact autoregressive reference match"
+        )
+    reference_ids = reference.get("generated_token_ids")
+    if not isinstance(reference_ids, list) or not reference_ids:
+        raise ValueError(f"{mode}: reference token ids must be a non-empty array")
+    if any(
+        isinstance(token, bool) or not isinstance(token, int) for token in reference_ids
+    ):
+        raise ValueError(f"{mode}: reference token ids must contain integers")
+    reference_count = len(reference_ids)
+    for field in ("matched_tokens", "total_tokens", "source_generated_token_count"):
+        if (
+            _integer(reference.get(field), f"{mode}.reference.{field}")
+            != reference_count
+        ):
+            raise ValueError(
+                f"{mode}: reference.{field} must cover every generated token"
+            )
+    if _number(reference.get("temperature"), f"{mode}.reference.temperature") != 0.0:
+        raise ValueError(f"{mode}: correctness smoke requires greedy temperature 0")
+
+    passes = _mapping(payload.get("passes"), f"{mode}.passes")
+    for pass_name in PASS_NAMES:
+        current = _mapping(passes.get(pass_name), f"{mode}.{pass_name}")
+        if current.get("teacher_forced") is not False:
+            raise ValueError(
+                f"{mode}.{pass_name}: correctness smoke must be autoregressive"
+            )
+        if current.get("generated_token_count") != reference_count:
+            raise ValueError(
+                f"{mode}.{pass_name}: generated-token count must match the reference"
+            )
+        if current.get("generated_ids") != reference_ids:
+            raise ValueError(
+                f"{mode}.{pass_name}: generated ids must exactly match the reference"
+            )
+        if current.get("fed_token_ids") != reference_ids:
+            raise ValueError(
+                f"{mode}.{pass_name}: fed ids must be the autoregressive outputs"
+            )
+
+
+def _validate_mode(
+    payload: dict[str, Any],
+    mode: str,
+    *,
+    evidence_scope: str = "benchmark",
+) -> dict[str, Any]:
     if payload.get("status") != "ok" or payload.get("schema_version") != 1:
         raise ValueError(f"{mode}: expected status=ok and schema_version=1")
     evidence = _mapping(payload.get("evidence"), f"{mode}.evidence")
     publishable = evidence.get("publishable_benchmark_evidence")
-    if publishable is not None and publishable is not True:
-        raise ValueError(f"{mode}: demo output is not benchmark evidence")
+    if evidence_scope == "benchmark":
+        if publishable is not None and publishable is not True:
+            raise ValueError(f"{mode}: demo output is not benchmark evidence")
+    elif evidence_scope == "correctness-smoke":
+        _validate_qwen_correctness_smoke(payload, mode, evidence)
+    else:
+        raise ValueError(f"unsupported evidence scope: {evidence_scope}")
     source = _mapping(payload.get("source"), f"{mode}.source")
     if source.get("provenance_mode") == "demo":
         raise ValueError(f"{mode}: demo provenance is not benchmark evidence")
@@ -849,11 +942,16 @@ def _compare_identity(sync: dict[str, Any], async_: dict[str, Any]) -> None:
         )
 
 
-def compare_reports(sync: dict[str, Any], async_: dict[str, Any]) -> dict[str, Any]:
+def compare_reports(
+    sync: dict[str, Any],
+    async_: dict[str, Any],
+    *,
+    evidence_scope: str = "benchmark",
+) -> dict[str, Any]:
     """Validate two already-loaded reports and return a paired summary."""
     _compare_identity(sync, async_)
-    validated_sync = _validate_mode(sync, "sync")
-    validated_async = _validate_mode(async_, "async")
+    validated_sync = _validate_mode(sync, "sync", evidence_scope=evidence_scope)
+    validated_async = _validate_mode(async_, "async", evidence_scope=evidence_scope)
     _require_equal(
         validated_sync["expert_bytes"],
         validated_async["expert_bytes"],
@@ -912,9 +1010,15 @@ def compare_reports(sync: dict[str, Any], async_: dict[str, Any]) -> dict[str, A
         "source_commit": validated_sync["source"]["commit"],
         "benchmark_script_sha256": validated_sync["source"]["benchmark_script_sha256"],
         "exact_invariants": True,
+        "evidence_scope": evidence_scope,
+        "publishable_benchmark_evidence": evidence_scope == "benchmark",
         "passes": comparisons,
         "limitations": [
-            "This validates one paired two-token smoke, not a general speedup claim.",
+            (
+                "This validates one non-publishable Qwen correctness pair, not benchmark evidence."
+                if evidence_scope == "correctness-smoke"
+                else "This validates one paired two-token smoke, not a general speedup claim."
+            ),
             "Timing can still vary with OS page-cache, clocks, and background load.",
             "Counter equality does not itself prove physical NVMe or CUDA interval overlap.",
         ],
@@ -926,8 +1030,17 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def compare_pair(sync_path: Path, async_path: Path) -> dict[str, Any]:
-    report = compare_reports(_load_json(sync_path), _load_json(async_path))
+def compare_pair(
+    sync_path: Path,
+    async_path: Path,
+    *,
+    evidence_scope: str = "benchmark",
+) -> dict[str, Any]:
+    report = compare_reports(
+        _load_json(sync_path),
+        _load_json(async_path),
+        evidence_scope=evidence_scope,
+    )
     report["inputs"] = {
         "sync": {
             "path": str(sync_path.resolve()),
@@ -953,13 +1066,27 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("sync", type=Path, help="sync result JSON")
     parser.add_argument("async_path", type=Path, help="async result JSON")
     parser.add_argument("--output", type=Path, help="optional create-only report JSON")
+    parser.add_argument(
+        "--correctness-smoke",
+        action="store_true",
+        help=(
+            "accept only a non-publishable, full-manifest Qwen pair with an "
+            "exact autoregressive reference match"
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        report = compare_pair(args.sync, args.async_path)
+        report = compare_pair(
+            args.sync,
+            args.async_path,
+            evidence_scope=(
+                "correctness-smoke" if args.correctness_smoke else "benchmark"
+            ),
+        )
         if args.output is not None:
             _write_create_only(args.output, report)
         print(json.dumps(report, indent=2, sort_keys=True))

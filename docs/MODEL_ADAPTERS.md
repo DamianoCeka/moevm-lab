@@ -80,7 +80,41 @@ completed local deterministic full-checkpoint capture and sync-path parity gate:
 It is still a **correctness-smoke** only path: no throughput claim, no production
 serving, no concurrency study, and no general benchmark across seeds/lengths/hardware.
 
-Next research steps are to rerun Qwen under the same gated protocol for broader
-controls (or a multi-prompt sweep) before any speed claim. Granite 4 H-Tiny and
-gpt-oss-20b remain later research candidates only; neither is an implemented or
-validated MoEVM adapter.
+The harness now also permits the bounded async scheduler for Qwen, but only
+behind the same pinned autoregressive reference gate. `adaptive` and `auto`
+remain disabled for this checkpoint. This is an experiment-enabling change,
+not async full-checkpoint evidence: no Qwen async result is accepted or
+published until exact output and cache/traffic invariants pass on real CUDA.
+
+Next research steps are a paired sync/async correctness probe followed, only if
+it passes, by a longer decode-focused run. Granite 4 H-Tiny and gpt-oss-20b
+remain later research candidates only; neither is an implemented or validated
+MoEVM adapter.
+
+The first probe must use the same clean commit, pinned snapshot, reference,
+workload and cache budget in both arms. Example (paths abbreviated):
+
+```powershell
+python scripts/benchmark_paged_olmoe.py --checkpoint qwen2-moe `
+  --snapshot <PINNED_SNAPSHOT> --reference-metadata <REFERENCE_JSON> `
+  --output results/qwen-sync.json --workload-file benchmarks/workloads/olmoe_m1.json `
+  --workload-id systems_en --max-input-tokens 32 --max-new-tokens 2 `
+  --device cuda:0 --policy lru --pipeline sync --slots-per-layer 4 `
+  --staging-slots 2 --seed 17 --cuda-overlap-telemetry
+
+python scripts/benchmark_paged_olmoe.py --checkpoint qwen2-moe `
+  --snapshot <PINNED_SNAPSHOT> --reference-metadata <REFERENCE_JSON> `
+  --output results/qwen-async.json --workload-file benchmarks/workloads/olmoe_m1.json `
+  --workload-id systems_en --max-input-tokens 32 --max-new-tokens 2 `
+  --device cuda:0 --policy lru --pipeline async --slots-per-layer 4 `
+  --staging-slots 2 --seed 17 --cuda-overlap-telemetry
+
+python scripts/compare_paged_pipeline_pair.py results/qwen-sync.json `
+  results/qwen-async.json --correctness-smoke `
+  --output results/qwen-sync-async-correctness.json
+```
+
+`--correctness-smoke` is deliberately separate from the normal comparison
+gate. It accepts only the full-manifest Qwen profile with an exact
+autoregressive reference match, emits a non-publishable result, and still
+requires identical logical cache/traffic counters between sync and async.
