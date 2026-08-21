@@ -1987,15 +1987,17 @@ class PagedRuntimeTests(unittest.TestCase):
         with init_empty_weights(include_buffers=False):
             paged_model = Qwen2MoeForCausalLM(paged_config)
         with SafetensorExpertStore(snapshot) as store:
-            runtime = PagedExpertRuntime(
-                ExpertSlotCache(
-                    store,
-                    capacity_per_layer=config.num_experts,
-                    device="cpu",
-                    policy=CachePolicy.LRU,
-                    pin_staging=False,
-                )
+            cache = ExpertSlotCache(
+                store,
+                capacity_per_layer=2,
+                device="cpu",
+                policy=CachePolicy.LRU,
+                staging_slots=2,
+                pin_staging=False,
+                pipeline_mode="async",
             )
+            self.addCleanup(cache.close)
+            runtime = PagedExpertRuntime(cache)
             with self.assertRaisesRegex(
                 TypeError,
                 "expected an OLMoEForCausalLM-compatible model",
@@ -2045,13 +2047,26 @@ class PagedRuntimeTests(unittest.TestCase):
                     attention_mask=attention_mask,
                     use_cache=False,
                 ).logits
+                async_logits = paged_model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                ).logits
+                cache.set_pipeline_mode("sync")
                 paged_logits = paged_model(
                     input_ids,
                     attention_mask=attention_mask,
                     use_cache=False,
                 ).logits
+            cache.wait_idle()
             torch.testing.assert_close(
                 paged_logits,
+                eager_logits,
+                rtol=0.0,
+                atol=0.0,
+            )
+            torch.testing.assert_close(
+                async_logits,
                 eager_logits,
                 rtol=0.0,
                 atol=0.0,

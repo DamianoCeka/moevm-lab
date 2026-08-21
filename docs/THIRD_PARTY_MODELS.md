@@ -56,6 +56,12 @@ reference that passed exact greedy token parity (2/2 tokens). It is a correctnes
 smoke only: one short prompt, no throughput claim, and no production-concurrency
 coverage.
 
+The benchmark harness can now exercise the same pinned checkpoint through the
+bounded async scheduler, still as non-publishable correctness evidence only.
+That path must match the pinned autoregressive tokens and preserve logical
+cache/traffic invariants before timings can even be considered. `adaptive` and
+`auto` selection remain unsupported for Qwen.
+
 The deterministic tiny `qwen2_moe` configuration, created locally from synthetic
 test weights, also has exact eager-versus-paged logits parity and exercises the
 resident shared-expert path.

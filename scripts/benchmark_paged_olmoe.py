@@ -110,7 +110,7 @@ class _CheckpointProfile(NamedTuple):
     verify_snapshot: Callable[[Path], dict[str, dict[str, int | str]]]
     verification_scope: str
     reference_required: bool = False
-    sync_only: bool = False
+    allowed_pipelines: tuple[str, ...] = ("sync", "async", "adaptive", "auto")
 
 
 _OLMOE_PROFILE = _CheckpointProfile(
@@ -155,7 +155,7 @@ _QWEN2_MOE_PROFILE = _CheckpointProfile(
     verify_snapshot=qwen2_moe_assets.verify_pinned_snapshot,
     verification_scope="full_required_file_manifest",
     reference_required=True,
-    sync_only=True,
+    allowed_pipelines=("sync", "async"),
 )
 _CHECKPOINT_PROFILES = {
     profile.key: profile for profile in (_OLMOE_PROFILE, _QWEN2_MOE_PROFILE)
@@ -200,8 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(sorted(_CHECKPOINT_PROFILES)),
         default="olmoe",
         help=(
-            "Pinned checkpoint profile. Qwen2-MoE is a synchronous, "
-            "reference-gated correctness smoke only."
+            "Pinned checkpoint profile. Qwen2-MoE supports sync/async "
+            "reference-gated correctness smokes only."
         ),
     )
     parser.add_argument(
@@ -304,8 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _validate_args(args: argparse.Namespace) -> None:
     profile = _checkpoint_profile(args.checkpoint)
-    if profile.sync_only and args.pipeline != "sync":
-        raise ValueError(f"{profile.display_name} only supports --pipeline sync")
+    if args.pipeline not in profile.allowed_pipelines:
+        supported = ", ".join(profile.allowed_pipelines)
+        raise ValueError(
+            f"{profile.display_name} only supports these pipelines: {supported}"
+        )
     if profile.reference_required and not args.reference_metadata:
         raise ValueError(
             f"{profile.display_name} requires --reference-metadata for correctness"
@@ -2037,12 +2040,16 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                         *(
                             [
-                                "Qwen2-MoE support is provisional correctness-smoke coverage; timings from this path are not publishable benchmark evidence."
+                                "Qwen2-MoE sync/async support is provisional correctness-smoke coverage; timings from this path are not publishable benchmark evidence."
                             ]
                             if profile.key == "qwen2-moe"
                             else []
                         ),
-                        "SHA-256 verification is intentionally after timed passes to avoid warming every shard first.",
+                        (
+                            "Qwen2-MoE's full required-file manifest is verified by size and SHA-256 before checkpoint use and verified again after the timed passes."
+                            if profile.key == "qwen2-moe"
+                            else "SHA-256 verification is intentionally after timed passes to avoid warming every shard first."
+                        ),
                         "Model loading and mmap page faults still make OS page-cache state uncontrolled.",
                         "Cold means an empty dynamic expert cache, not a cold NVMe or OS cache.",
                         "Storage time includes safetensors mmap/page faults and CPU staging copies.",

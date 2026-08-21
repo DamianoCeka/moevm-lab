@@ -5,9 +5,10 @@
 - Added an experimental `qwen2_moe` adapter shape and exact tiny-model logits
   parity including the resident shared expert. The public
   `Qwen/Qwen1.5-MoE-A2.7B` acceptance candidate is revision-pinned and its
-  separate Tongyi Qianwen license is documented, but its full checkpoint has
-  not yet passed correctness, memory or performance validation and no model
-  weights are redistributed.
+  separate Tongyi Qianwen license is documented. A full-checkpoint sync smoke
+  passed exact 2-token reference parity with bounded VRAM; the harness now also
+  permits a fail-closed async correctness probe while keeping Qwen timings
+  non-publishable. No model weights are redistributed.
 - Added an explicit Transformers MoE adapter boundary and an exact end-to-end
   tiny-Mixtral parity test while retaining the existing OLMoE API. This proves
   model integration at small scale; it is not full-checkpoint Mixtral support

@@ -352,6 +352,48 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         )
         return path
 
+    @staticmethod
+    def _as_qwen_correctness_smoke(report: dict[str, Any]) -> dict[str, Any]:
+        report["evidence"] = {
+            "label": "full-checkpoint reference-gated correctness smoke",
+            "publishable_benchmark_evidence": False,
+            "offline_local_only": True,
+        }
+        report["model"].update(
+            {
+                "checkpoint_profile": "qwen2-moe",
+                "verification_scope": "full_required_file_manifest",
+                "preflight_full_manifest_verified": True,
+                "verified_files": {
+                    "model.safetensors.index.json": {
+                        "sha256": "6" * 64,
+                        "size_bytes": 321,
+                    }
+                },
+            }
+        )
+        generated = [101, 102]
+        for pass_payload in report["passes"].values():
+            pass_payload["teacher_forced"] = False
+            pass_payload["generated_ids"] = generated.copy()
+            pass_payload["fed_token_ids"] = generated.copy()
+            pass_payload["first_token"]["fed_token_id"] = generated[0]
+            token = pass_payload["decode"]["per_token"][0]
+            token["fed_token_id"] = generated[1]
+        report["workload"]["decoding"] = "greedy autoregressive"
+        report["reference_comparison"].update(
+            {
+                "available": True,
+                "matched": True,
+                "mode": "autoregressive_exact_gate",
+                "generated_token_ids": generated.copy(),
+                "matched_tokens": 2,
+                "total_tokens": 2,
+                "first_mismatch_index": None,
+            }
+        )
+        return report
+
     def test_valid_pair_reports_separate_cold_and_retained_savings(self) -> None:
         result = _COMPARATOR.compare_reports(
             self._report("sync"), self._report("async")
@@ -367,6 +409,71 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         retained = result["passes"]["repeat_retained_expert_cache"]
         self.assertEqual(retained["saving_seconds"], 1.5)
         self.assertAlmostEqual(retained["saving_fraction"], 0.25)
+
+    def test_qwen_correctness_scope_is_explicit_and_non_publishable(self) -> None:
+        sync = self._as_qwen_correctness_smoke(self._report("sync"))
+        async_ = self._as_qwen_correctness_smoke(self._report("async"))
+
+        with self.assertRaisesRegex(ValueError, "not benchmark evidence"):
+            _COMPARATOR.compare_reports(sync, async_)
+
+        result = _COMPARATOR.compare_reports(
+            sync,
+            async_,
+            evidence_scope="correctness-smoke",
+        )
+
+        self.assertEqual(result["evidence_scope"], "correctness-smoke")
+        self.assertFalse(result["publishable_benchmark_evidence"])
+        self.assertTrue(result["exact_invariants"])
+
+    def test_qwen_correctness_scope_rejects_wrong_model_or_reference(self) -> None:
+        sync = self._as_qwen_correctness_smoke(self._report("sync"))
+        async_ = self._as_qwen_correctness_smoke(self._report("async"))
+        sync["model"]["checkpoint_profile"] = "olmoe"
+        async_["model"]["checkpoint_profile"] = "olmoe"
+        with self.assertRaisesRegex(ValueError, "only supports qwen2-moe"):
+            _COMPARATOR.compare_reports(
+                sync,
+                async_,
+                evidence_scope="correctness-smoke",
+            )
+
+        async_ = self._as_qwen_correctness_smoke(self._report("async"))
+        sync["model"]["checkpoint_profile"] = "qwen2-moe"
+        sync["reference_comparison"]["matched"] = False
+        async_["reference_comparison"]["matched"] = False
+        with self.assertRaisesRegex(ValueError, "exact autoregressive"):
+            _COMPARATOR.compare_reports(
+                sync,
+                async_,
+                evidence_scope="correctness-smoke",
+            )
+
+    def test_qwen_correctness_scope_rejects_teacher_force_or_unverified_manifest(
+        self,
+    ) -> None:
+        sync = self._as_qwen_correctness_smoke(self._report("sync"))
+        async_ = self._as_qwen_correctness_smoke(self._report("async"))
+        for report in (sync, async_):
+            report["passes"]["cold_expert_cache"]["teacher_forced"] = True
+        with self.assertRaisesRegex(ValueError, "must be autoregressive"):
+            _COMPARATOR.compare_reports(
+                sync,
+                async_,
+                evidence_scope="correctness-smoke",
+            )
+
+        sync = self._as_qwen_correctness_smoke(self._report("sync"))
+        async_ = self._as_qwen_correctness_smoke(self._report("async"))
+        for report in (sync, async_):
+            report["model"]["preflight_full_manifest_verified"] = False
+        with self.assertRaisesRegex(ValueError, "pre-use manifest verification"):
+            _COMPARATOR.compare_reports(
+                sync,
+                async_,
+                evidence_scope="correctness-smoke",
+            )
 
     def test_pending_load_peak_allows_two_staging_windows(self) -> None:
         sync = self._report("sync")
@@ -400,6 +507,18 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
             async_["runtime"]["budget"].setdefault("resolved_pipeline_by_pass", {})[
                 pass_name
             ] = "async"
+
+        result = _COMPARATOR.compare_reports(sync, async_)
+
+        self.assertEqual(result["status"], "ok")
+
+    def test_model_hash_verification_durations_are_not_identity_fields(self) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        sync["model"]["hash_verification_seconds"] = 10.0
+        async_["model"]["hash_verification_seconds"] = 11.0
+        sync["model"]["preflight_hash_verification_seconds"] = 28.3
+        async_["model"]["preflight_hash_verification_seconds"] = 28.1
 
         result = _COMPARATOR.compare_reports(sync, async_)
 
