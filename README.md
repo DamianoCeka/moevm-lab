@@ -43,10 +43,10 @@ MoEVM Lab starts one level below a production runtime: it builds a reproducible 
   synchronous paged forward path with exact tiny-model and real-expert checks.
   The adapter boundary supports OLMoE, exact tiny-Mixtral parity, and exact
   tiny-Qwen2MoE parity including its resident shared expert. The pinned full
-  Qwen checkpoint has passed a narrow 2-token sync correctness/memory-fit
-  smoke; full-checkpoint performance evidence remains OLMoE-only.
-- An opt-in bounded async path with one I/O worker, pinned staging buffers, a
-  dedicated CUDA H2D stream and per-slot readiness/use events. It pipelines
+  Qwen checkpoint has passed a narrow exact 2-token sync/async correctness and
+  memory-fit pair; full-checkpoint performance evidence remains OLMoE-only.
+- An opt-in bounded async path with one I/O worker by default, pinned staging
+  buffers, a dedicated CUDA H2D stream and per-slot readiness/use events. It pipelines
   mmap/page-cache service and H2D with expert compute inside a routed layer.
   That mechanism alone is not evidence of physical NVMe overlap or speedup;
   the provisional paired measurement below is separate evidence.
@@ -201,6 +201,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
   --pipeline async `
   --staging-slots 2
 ```
+
+An experimental bounded two-reader host path is available with
+`--io-workers 2 --staging-slots 2`. It can overlap mmap-backed destination
+copies, but does not by itself prove parallel physical NVMe reads or a speedup.
 
 The conservative selector is available with `--pipeline adaptive` and the
 same minimum of two staging slots. Its output records how many forwards and

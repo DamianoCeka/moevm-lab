@@ -141,6 +141,7 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         self.assertEqual(args.pipeline, "sync")
         self.assertEqual(args.slots_per_layer, 32)
         self.assertEqual(args.staging_slots, 1)
+        self.assertEqual(args.io_workers, 1)
         self.assertEqual(args.max_new_tokens, 2)
         self.assertIsNone(args.prompt)
         self.assertFalse(args.teacher_force_reference)
@@ -161,6 +162,12 @@ class PagedOlmoeHarnessTests(unittest.TestCase):
         parse_max_new_tokens = _HARNESS._bounded_integer("max-new-tokens", 1, 64)
         with self.assertRaises(argparse.ArgumentTypeError):
             parse_max_new_tokens("65")
+
+        two_reader_args = self._args("--staging-slots", "2", "--io-workers", "2")
+        _HARNESS._validate_args(two_reader_args)
+        self.assertEqual(two_reader_args.io_workers, 2)
+        with self.assertRaisesRegex(ValueError, "cannot exceed staging-slots"):
+            _HARNESS._validate_args(self._args("--io-workers", "2"))
 
     def test_qwen_profile_is_reference_gated_and_sync_async_only(self) -> None:
         reference_path = self.root / "qwen-reference.json"

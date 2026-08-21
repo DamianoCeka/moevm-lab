@@ -101,6 +101,7 @@ def result_binding(result: Mapping[str, Any]) -> dict[str, Any]:
             "cache_bytes": budget.get("cache_bytes"),
             "staging_slots": budget.get("staging_slots"),
             "staging_host_bytes": budget.get("staging_host_bytes"),
+            "io_workers": budget.get("io_workers"),
             "non_expert_checkpoint_bytes": budget.get("non_expert_checkpoint_bytes"),
             "expected_weight_vram_bytes": budget.get("expected_weight_vram_bytes"),
         },

@@ -329,21 +329,24 @@ class SafetensorExpertStore:
             )
 
         bytes_read = 0
+        sources: list[tuple[str, Any]] = []
+        # ``safe_open`` handle access remains serialized, but the expensive
+        # copy/page-fault work is intentionally outside this lock.  Returned
+        # tensors remain backed by the read-only mapping until the external
+        # store is closed, which happens only after cache workers are joined.
         with self._handle_lock:
             for shard_path, projected_names in names_by_shard.items():
                 handle = self._open_handle(shard_path)
                 for projection, tensor_name in projected_names:
-                    source = handle.get_tensor(tensor_name)
-                    destination = destinations[projection]
-                    if (
-                        source.shape != destination.shape
-                        or source.dtype != destination.dtype
-                    ):
-                        raise ValueError(
-                            f"projection metadata changed for {key.compact()}:{projection}"
-                        )
-                    destination.copy_(source)
-                    bytes_read += source.numel() * source.element_size()
+                    sources.append((projection, handle.get_tensor(tensor_name)))
+        for projection, source in sources:
+            destination = destinations[projection]
+            if source.shape != destination.shape or source.dtype != destination.dtype:
+                raise ValueError(
+                    f"projection metadata changed for {key.compact()}:{projection}"
+                )
+            destination.copy_(source)
+            bytes_read += source.numel() * source.element_size()
         return bytes_read
 
     def load(self, key: ExpertKey, *, pin_memory: bool = False) -> ExpertWeights:
@@ -1101,6 +1104,7 @@ class ExpertSlotCache:
         policy: CachePolicy | str = CachePolicy.LRU,
         static_keys: Iterable[ExpertKey] = (),
         staging_slots: int = 1,
+        io_workers: int = 1,
         pin_staging: bool | None = None,
         pipeline_mode: str = "sync",
     ) -> None:
@@ -1111,6 +1115,12 @@ class ExpertSlotCache:
             raise ValueError("capacity must be positive")
         if staging_slots <= 0:
             raise ValueError("staging_slots must be positive")
+        if isinstance(io_workers, bool) or not isinstance(io_workers, int):
+            raise TypeError("io_workers must be an integer")
+        if io_workers <= 0 or io_workers > 2:
+            raise ValueError("io_workers must be between one and two")
+        if io_workers > staging_slots:
+            raise ValueError("io_workers cannot exceed staging_slots")
         if pipeline_mode not in ("sync", "async", "adaptive"):
             raise ValueError("pipeline_mode must be 'sync', 'async', or 'adaptive'")
         self.store = store
@@ -1201,6 +1211,7 @@ class ExpertSlotCache:
             )
         self.pin_staging = pin_staging
         self.staging_slots = staging_slots
+        self.io_workers = io_workers
         self.pipeline_mode = pipeline_mode
         self._async_infrastructure_enabled = pipeline_mode in ("async", "adaptive")
         if (
@@ -1254,7 +1265,10 @@ class ExpertSlotCache:
         # them with task_done().  `wait_idle()` includes it in its drain gate,
         # so an abandoned queued lookahead cannot outlive a mode switch.
         self._queued_job_count = 0
+        # Kept as the first worker for compatibility with existing lifecycle
+        # diagnostics; `_workers` owns the complete bounded pool.
         self._worker: threading.Thread | None = None
+        self._workers: list[threading.Thread] = []
         self._accepting = True
         self._closed = False
         self._close_lock = threading.Lock()
@@ -1321,15 +1335,39 @@ class ExpertSlotCache:
                 raise RuntimeError("asynchronous expert pipeline failed") from (
                     self._pipeline_error
                 )
-            if self._worker is not None:
+            if self._workers:
                 return
-            worker = threading.Thread(
-                target=self._io_worker,
-                name="moevm-expert-io",
-                daemon=False,
-            )
-            self._worker = worker
-            worker.start()
+            jobs = self._jobs
+            if jobs is None:  # pragma: no cover - constructor invariant
+                raise RuntimeError("asynchronous job queue is unavailable")
+            started: list[threading.Thread] = []
+            try:
+                for worker_index in range(self.io_workers):
+                    worker_name = (
+                        "moevm-expert-io"
+                        if self.io_workers == 1
+                        else f"moevm-expert-io-{worker_index + 1}"
+                    )
+                    worker = threading.Thread(
+                        target=self._io_worker,
+                        name=worker_name,
+                        daemon=False,
+                    )
+                    worker.start()
+                    started.append(worker)
+            except Exception as exc:
+                # Startup happens before the first ticket is admitted.  Stop
+                # any partial pool immediately so no orphan reader survives a
+                # failed constructor-to-submit transition.
+                for _worker in started:
+                    jobs.put_nowait(None)
+                for _worker in started:
+                    _worker.join()
+                self._pipeline_error = exc
+                self._condition.notify_all()
+                raise RuntimeError("failed to start expert I/O workers") from exc
+            self._workers = started
+            self._worker = started[0]
 
     def _claim_staging_slot(self, ticket: ExpertLoadTicket) -> int:
         waited = False
@@ -2771,12 +2809,14 @@ class ExpertSlotCache:
                     self.wait_idle()
                 except Exception as exc:  # noqa: BLE001 - shutdown must continue
                     first_error = exc
-                worker = self._worker
+                workers = tuple(self._workers)
                 jobs = self._jobs
-            if worker is not None and jobs is not None:
+            if workers and jobs is not None:
                 jobs.join()
-                jobs.put(None)
-                worker.join()
+                for _worker in workers:
+                    jobs.put(None)
+                for _worker in workers:
+                    _worker.join()
             if self._transfer_stream is not None:
                 try:
                     self._transfer_stream.synchronize()

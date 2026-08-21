@@ -276,6 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
     )
     parser.add_argument(
+        "--io-workers",
+        type=_bounded_integer("io-workers", 1, 2),
+        default=1,
+        help=(
+            "Bounded safetensors reader workers; two is experimental and "
+            "requires at least two staging slots."
+        ),
+    )
+    parser.add_argument(
         "--max-input-tokens",
         type=_bounded_integer("max-input-tokens", 1, 256),
         default=64,
@@ -345,6 +354,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--pipeline-profile is only valid with --pipeline auto")
     if args.pipeline in ("async", "adaptive", "auto") and args.staging_slots < 2:
         raise ValueError("async-capable pipeline requires at least two staging slots")
+    if args.io_workers > args.staging_slots:
+        raise ValueError("io-workers cannot exceed staging-slots")
     output_path = Path(args.output).expanduser()
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite output: {output_path}")
@@ -1702,6 +1713,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "cache_bytes": cache_bytes,
                 "staging_slots": args.staging_slots,
                 "staging_host_bytes": args.staging_slots * store.spec.size_bytes,
+                "io_workers": args.io_workers,
                 "pipeline": args.pipeline,
                 "non_expert_checkpoint_bytes": non_expert_bytes,
                 "expected_weight_vram_bytes": expected_weight_bytes,
@@ -1790,6 +1802,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 static_keys=static_keys,
                 staging_slots=args.staging_slots,
+                io_workers=args.io_workers,
                 pin_staging=True,
                 pipeline_mode=cache_initial_mode,
             )

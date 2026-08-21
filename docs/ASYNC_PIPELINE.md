@@ -13,8 +13,8 @@ a new performance claim and not yet a production runtime contract.
 
 For the active experts in a routed layer, the async path uses:
 
-1. one background I/O worker to service expert loads from the read-only
-   safetensors store;
+1. one background I/O worker by default, or an experimental bounded pair, to
+   service expert loads from the read-only safetensors store;
 2. a bounded set of CPU staging buffers, pinned for CUDA use;
 3. one dedicated CUDA H2D stream for non-blocking RAM-to-VRAM copies;
 4. CUDA readiness events before an expert is consumed on the compute stream;
@@ -23,9 +23,11 @@ For the active experts in a routed layer, the async path uses:
 
 Requests for the same missing expert are coalesced. Queue and staging capacity
 are bounded by configuration, and expert computation retains deterministic
-layer-local ordering. The current design intentionally uses one I/O worker
-because safetensors shard access is serialized and additional workers would not
-yet demonstrate useful physical storage parallelism.
+layer-local ordering. Safetensors handle access remains serialized, while the
+destination copy and its mmap/page-fault work run outside that short critical
+section. This permits two workers to fill distinct staging slots concurrently
+without sharing a writable buffer. It does not establish physical storage
+parallelism.
 
 Lookahead schedules only storage work. It does not update logical requests,
 hit/miss counters or LRU recency. Those transitions occur when the runtime
@@ -46,7 +48,7 @@ both.
 read-only safetensors mmap
           |
           v
-one bounded I/O worker -> pinned staging slots -> CUDA H2D stream
+one/two bounded readers -> pinned staging slots -> CUDA H2D stream
                                                    |
                                              readiness event
                                                    |
@@ -74,6 +76,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_real_routing.ps1 `
 `--pipeline async` requires `--staging-slots 2` or more. Two slots are the
 smallest useful overlap configuration and the initial comparison point. The
 default remains `--pipeline sync`, for which one staging slot remains valid.
+
+Reader parallelism is separately opt-in. `--io-workers 2` requires at least
+two staging slots, never allocates additional staging buffers, and remains
+experimental:
+
+```powershell
+& '.\.venv-real\Scripts\python.exe' .\scripts\benchmark_paged_olmoe.py `
+  --snapshot <pinned-local-snapshot> `
+  --output .\results\paged-two-readers.json `
+  --pipeline async `
+  --staging-slots 2 `
+  --io-workers 2
+```
 
 ### Opt-in CUDA overlap telemetry
 
@@ -250,7 +265,7 @@ stream. It does not own the external `SafetensorExpertStore`.
   drains submitted storage and transfer work and surfaces an asynchronous
   failure to the caller.
 - Call `close()` before closing the store. `close()` is idempotent: it drains
-  outstanding work, stops and joins the worker, and finishes the transfer
+  outstanding work, stops and joins every reader worker, and finishes the transfer
   stream.
 - A context manager or `try/finally` should preserve that order even if a model
   forward fails.
@@ -277,6 +292,10 @@ lookaheads that could not start H2D because no safe empty GPU slot existed.
 backpressure signals, not proof of physical NVMe saturation, and are diagnostic
 only rather than sync/async pair invariants.
 
+With two readers, `storage_seconds`, `reader_queue_wait_seconds`, and
+`staging_wait_seconds` are sums of per-ticket worker intervals; they are not
+elapsed wall-clock durations for the reader pool.
+
 ## What this MVP does not prove
 
 The current storage backend is mmap/page-cache backed. Therefore CUDA events,
@@ -287,7 +306,7 @@ not establish:
 - direct or unbuffered NVMe I/O;
 - physical SSD queue-depth utilization;
 - a persistent pinned-RAM expert cache;
-- batched reads, cancellation or multiple storage workers;
+- batched reads, direct I/O, or measured physical storage queue depth;
 - overlap across concurrent model forwards;
 - a general latency or throughput improvement.
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added an opt-in two-reader safetensors path that keeps handle access
+  serialized while allowing bounded destination copies into separate staging
+  slots to overlap; the default remains one reader.
+
 - Added an experimental `qwen2_moe` adapter shape and exact tiny-model logits
   parity including the resident shared expert. The public
   `Qwen/Qwen1.5-MoE-A2.7B` acceptance candidate is revision-pinned and its

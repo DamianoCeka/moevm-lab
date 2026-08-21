@@ -43,9 +43,10 @@ The diagram intentionally shows two implementations of the host path:
 - The **simulator** models an inclusive, byte-capacity RAM LRU below its VRAM
   LRU.  NVMe is an implicit backing store containing all experts.
 - The current **paged OLMoE runtime** obtains expert tensors through a
-  read-only safetensors mmap, services them with one bounded I/O worker, copies
-  them through pinned CPU staging buffers, then places them into bounded GPU
-  slots.  It does not yet implement a persistent pinned-RAM expert cache.
+  read-only safetensors mmap, services them with one bounded I/O worker by
+  default, copies them through pinned CPU staging buffers, then places them
+  into bounded GPU slots. It does not yet implement a persistent pinned-RAM
+  expert cache.
 
 Both paths use the same useful abstraction: an expert is addressed by
 `(layer_id, expert_id)` and only selected, non-resident experts need weight

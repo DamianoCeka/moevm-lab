@@ -79,6 +79,7 @@ def _result(
                 "cache_bytes": 48,
                 "staging_slots": 2,
                 "staging_host_bytes": 24,
+                "io_workers": 1,
                 "non_expert_checkpoint_bytes": 100,
                 "expected_weight_vram_bytes": 148,
                 "device_total_vram_bytes": 1000,

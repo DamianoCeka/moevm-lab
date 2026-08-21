@@ -495,6 +495,19 @@ class PagedPipelinePairComparatorTests(unittest.TestCase):
         ):
             _COMPARATOR.compare_reports(sync, async_)
 
+    def test_reader_pool_is_bounded_by_staging_budget(self) -> None:
+        sync = self._report("sync")
+        async_ = self._report("async")
+        for report in (sync, async_):
+            report["runtime"]["budget"]["io_workers"] = 2
+
+        self.assertEqual(_COMPARATOR.compare_reports(sync, async_)["status"], "ok")
+
+        for report in (sync, async_):
+            report["runtime"]["budget"]["staging_slots"] = 1
+        with self.assertRaisesRegex(ValueError, "io_workers exceeds staging_slots"):
+            _COMPARATOR.compare_reports(sync, async_)
+
     def test_mode_specific_resolved_pipeline_budget_is_not_an_identity_mismatch(
         self,
     ) -> None:

@@ -818,6 +818,11 @@ def _validate_mode(
     _require_metric_sum(final_metrics, final_parts, f"{mode}.runtime.final_metrics")
 
     staging_slots = _integer(budget.get("staging_slots"), f"{mode}.staging_slots")
+    io_workers = _integer(budget.get("io_workers", 1), f"{mode}.io_workers")
+    if io_workers not in (1, 2):
+        raise ValueError(f"{mode}: io_workers must be one or two")
+    if io_workers > staging_slots:
+        raise ValueError(f"{mode}: io_workers exceeds staging_slots")
     peak_staging = _integer(
         _mapping(runtime.get("final_metrics"), f"{mode}.final_metrics").get(
             "peak_staging_in_use"

@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 try:
@@ -95,6 +96,7 @@ class PagedRuntimeTests(unittest.TestCase):
         static_keys: tuple[ExpertKey, ...] = (),
         device: str = "cpu",
         staging_slots: int = 1,
+        io_workers: int = 1,
         pipeline_mode: str = "sync",
     ) -> ExpertSlotCache:
         return ExpertSlotCache(
@@ -104,6 +106,7 @@ class PagedRuntimeTests(unittest.TestCase):
             policy=policy,
             static_keys=static_keys,
             staging_slots=staging_slots,
+            io_workers=io_workers,
             pin_staging=device == "cuda",
             pipeline_mode=pipeline_mode,
         )
@@ -694,6 +697,84 @@ class PagedRuntimeTests(unittest.TestCase):
         torch.testing.assert_close(loaded.gate_up, torch.cat((gate, up)))
         torch.testing.assert_close(loaded.down, down)
 
+    def test_store_serializes_handle_access_but_not_destination_copies(self) -> None:
+        copy_barrier = threading.Barrier(2)
+        failures: list[BaseException] = []
+        original_open_handle = self.store._open_handle
+
+        class FakeSource:
+            def __init__(self, shape: tuple[int, ...]) -> None:
+                self.shape = shape
+                self.dtype = self_store.spec.dtype
+
+            def numel(self) -> int:
+                result = 1
+                for dimension in self.shape:
+                    result *= dimension
+                return result
+
+            def element_size(self) -> int:
+                return self_store.spec.element_size
+
+        class FakeHandle:
+            @staticmethod
+            def get_tensor(tensor_name: str) -> FakeSource:
+                shape = (
+                    self_store.spec.down_shape
+                    if ".down_proj." in tensor_name
+                    else (
+                        self_store.spec.intermediate_size,
+                        self_store.spec.hidden_size,
+                    )
+                )
+                return FakeSource(shape)
+
+        class FakeDestination:
+            def __init__(self, shape: tuple[int, ...]) -> None:
+                self.shape = shape
+                self.dtype = self_store.spec.dtype
+                self.device = SimpleNamespace(type="cpu")
+
+            def __getitem__(self, _item: object) -> FakeDestination:
+                return FakeDestination(
+                    (
+                        self_store.spec.intermediate_size,
+                        self_store.spec.hidden_size,
+                    )
+                )
+
+            def copy_(self, _source: FakeSource) -> FakeDestination:
+                copy_barrier.wait(timeout=2)
+                return self
+
+        self_store = self.store
+        self.store._open_handle = lambda _path: FakeHandle()
+
+        def load(key: ExpertKey) -> None:
+            try:
+                self.store.load_into(
+                    key,
+                    FakeDestination(self.store.spec.gate_up_shape),
+                    FakeDestination(self.store.spec.down_shape),
+                )
+            except BaseException as exc:  # noqa: BLE001 - thread result
+                failures.append(exc)
+
+        threads = [
+            threading.Thread(target=load, args=(ExpertKey(0, expert),))
+            for expert in (0, 1)
+        ]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+        finally:
+            self.store._open_handle = original_open_handle
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(failures, [])
+
     def test_lru_policy_and_allocations_are_bounded(self) -> None:
         cache = self._cache(2)
         zero = ExpertKey(0, 0)
@@ -1007,6 +1088,47 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(metrics.adaptive_sync_forwards, 1)
         self.assertEqual(metrics.adaptive_sync_experts, 2)
         self.assertIsNone(cache._worker)
+
+    def test_io_worker_pool_is_bounded_by_staging(self) -> None:
+        with self.assertRaisesRegex(TypeError, "io_workers must be an integer"):
+            self._cache(1, staging_slots=1, io_workers=True)
+        with self.assertRaisesRegex(ValueError, "between one and two"):
+            self._cache(1, staging_slots=3, io_workers=3)
+        with self.assertRaisesRegex(ValueError, "cannot exceed staging_slots"):
+            self._cache(1, staging_slots=1, io_workers=2)
+
+    def test_two_io_workers_read_into_distinct_bounded_staging_slots(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            io_workers=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        original_load_into = self.store.load_into
+        read_barrier = threading.Barrier(2)
+        worker_names: set[str] = set()
+        worker_names_lock = threading.Lock()
+
+        def concurrent_load(*args, **kwargs):
+            with worker_names_lock:
+                worker_names.add(threading.current_thread().name)
+            read_barrier.wait(timeout=2)
+            return original_load_into(*args, **kwargs)
+
+        self.store.load_into = concurrent_load
+        try:
+            first = cache.submit(ExpertKey(0, 0))
+            second = cache.submit(ExpertKey(0, 1))
+            self.assertTrue(first.storage_done.wait(timeout=5))
+            self.assertTrue(second.storage_done.wait(timeout=5))
+            cache.wait_idle()
+        finally:
+            self.store.load_into = original_load_into
+
+        self.assertEqual(len(cache._workers), 2)
+        self.assertEqual(worker_names, {"moevm-expert-io-1", "moevm-expert-io-2"})
+        self.assertLessEqual(cache.metrics().peak_staging_in_use, 2)
 
     def test_adaptive_single_staging_slot_remains_synchronous(self) -> None:
         cache = self._cache(2, pipeline_mode="adaptive")
@@ -1565,6 +1687,52 @@ class PagedRuntimeTests(unittest.TestCase):
         self.assertEqual(close_errors, [])
         self.assertEqual(cache.resident_keys, (key,))
         self.assertEqual(cache.metrics().storage_failures, 0)
+
+    def test_async_close_joins_every_reader_in_the_bounded_pool(self) -> None:
+        cache = self._cache(
+            2,
+            staging_slots=2,
+            io_workers=2,
+            pipeline_mode="async",
+        )
+        original_load_into = self.store.load_into
+        both_reading = threading.Barrier(3)
+        release = threading.Event()
+        close_errors: list[Exception] = []
+
+        def blocked_load(*args, **kwargs):
+            both_reading.wait(timeout=5)
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release reader pool")
+            return original_load_into(*args, **kwargs)
+
+        self.store.load_into = blocked_load
+        try:
+            cache.submit(ExpertKey(0, 0))
+            cache.submit(ExpertKey(0, 1))
+            both_reading.wait(timeout=5)
+
+            def close_cache() -> None:
+                try:
+                    cache.close()
+                except Exception as exc:  # noqa: BLE001 - thread result
+                    close_errors.append(exc)
+
+            closer = threading.Thread(target=close_cache)
+            closer.start()
+            time.sleep(0.02)
+            self.assertTrue(closer.is_alive())
+            release.set()
+            closer.join(timeout=5)
+            self.assertFalse(closer.is_alive())
+        finally:
+            release.set()
+            self.store.load_into = original_load_into
+            cache.close()
+
+        self.assertEqual(close_errors, [])
+        self.assertTrue(all(not worker.is_alive() for worker in cache._workers))
+        self.assertEqual(cache.resident_keys, (ExpertKey(0, 0), ExpertKey(0, 1)))
 
     def test_async_queue_full_rejects_without_holding_execution_lock(self) -> None:
         cache = self._cache(
@@ -3008,6 +3176,46 @@ class PagedRuntimeTests(unittest.TestCase):
             {
                 "cache_transfer_loads_delta": h2d_span_count,
                 "h2d_span_count": h2d_span_count,
+            },
+        )
+
+    @unittest.skipUnless(
+        torch is not None and torch.cuda.is_available(),
+        "requires CUDA",
+    )
+    def test_cuda_timeline_covers_two_reader_worker_transfers(self) -> None:
+        cache = self._cache(
+            2,
+            device="cuda",
+            staging_slots=2,
+            io_workers=2,
+            pipeline_mode="async",
+        )
+        self.addCleanup(cache.close)
+        runtime = PagedExpertRuntime(cache)
+
+        with runtime.cuda_timeline_capture() as capture:
+            tickets = tuple(
+                cache._submit_lookahead(
+                    ExpertKey(0, expert),
+                    cuda_timeline=capture,
+                )
+                for expert in (0, 1)
+            )
+            for ticket in tickets:
+                self.assertTrue(ticket.storage_done.wait(timeout=5))
+                self.assertTrue(ticket.transfer_enqueued.wait(timeout=5))
+
+        self.assertIsNotNone(capture.result)
+        timeline = capture.result
+        self.assertTrue(timeline["complete"])
+        h2d_span_count = sum(span["lane"] == "h2d" for span in timeline["spans"])
+        self.assertEqual(h2d_span_count, 2)
+        self.assertEqual(
+            timeline["coverage"],
+            {
+                "cache_transfer_loads_delta": 2,
+                "h2d_span_count": 2,
             },
         )
 
